@@ -23,6 +23,12 @@ client = BetterMem()
 # results = client.query("Explain transformer attention")
 ```
 
+For a more complete, runnable console demo, see `demo/basic_usage.py`:
+
+```bash
+uv run python demo/basic_usage.py
+```
+
 Architecture
 ------------
 

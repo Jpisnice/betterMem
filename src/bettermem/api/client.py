@@ -197,6 +197,7 @@ class BetterMem:
             scorer = QueryScorer()
             scorer.add_visit_counts(traversal_res.visit_counts)
             scores = scorer.scores()
+            scores = self._scores_to_chunk_space(scores)
             contexts = self._context_aggregator.select(
                 scores,
                 top_k=top_k,
@@ -218,6 +219,7 @@ class BetterMem:
             scorer = QueryScorer()
             scorer.add_visit_counts(traversal_res.visit_counts)
             scores = scorer.scores()
+            scores = self._scores_to_chunk_space(scores)
             contexts = self._context_aggregator.select(
                 scores,
                 top_k=top_k,
@@ -254,6 +256,43 @@ class BetterMem:
         - Topic transitions and their associated keywords.
         """
         return self._last_explanation
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _scores_to_chunk_space(self, scores: dict[str, float]) -> dict[str, float]:
+        """Project node-level scores into chunk space using the graph structure.
+
+        Beam search and random walk operate over topic nodes; this helper
+        converts their visit counts into scores over chunk nodes by
+        distributing mass along topic→chunk edges. If scores already
+        contain chunk nodes, those are preserved.
+        """
+        if self._graph is None:
+            return {}
+
+        from bettermem.core.nodes import NodeKind  # local import to avoid cycles
+
+        chunk_scores: dict[str, float] = {}
+
+        for node_id, score in scores.items():
+            node = self._graph.get_node(node_id)
+            if node is None:
+                continue
+
+            if node.kind == NodeKind.CHUNK:
+                chunk_scores[node_id] = chunk_scores.get(node_id, 0.0) + float(score)
+            elif node.kind == NodeKind.TOPIC:
+                neighbors = self._graph.get_neighbors(node_id)
+                for neigh_id, weight in neighbors.items():
+                    neigh = self._graph.get_node(neigh_id)
+                    if neigh is None or neigh.kind != NodeKind.CHUNK:
+                        continue
+                    chunk_scores[neigh_id] = chunk_scores.get(neigh_id, 0.0) + float(
+                        score
+                    ) * float(weight)
+
+        return chunk_scores
 
     # ------------------------------------------------------------------
     # Persistence

@@ -13,3 +13,9 @@ wheels/
 .vscode/
 .idea/
 .cursor/
+
+# Testing
+.pytest_cache/
+
+#Demo fles
+demo/demo_index/
