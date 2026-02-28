@@ -28,50 +28,113 @@ Architecture
 
 ```mermaid
 flowchart TD
-  user[User] --> client[BetterMemClient]
-  corpus[RawDocuments] --> client
 
-  client --> buildIndex[BuildIndex]
-  buildIndex --> chunker[Chunker]
-  chunker --> chunks[Chunks]
-  buildIndex --> topicModel[TopicModel]
-  topicModel --> chunkTopics["ChunkTopicDists"]
-  chunks --> corpusIndexer[CorpusIndexer]
-  chunkTopics --> corpusIndexer
-  corpusIndexer --> graph["Graph G(V,E)"]
-  corpusIndexer --> transModel["TransitionModel P(v_t|v_{t-1},v_{t-2})"]
+  subgraph inputLayer [Inputs]
+    corpus["Raw Corpus Documents"]
+    query["Query text q"]
+  end
 
-  graph --> saveIndex[SaveIndex]
-  transModel --> saveIndex
-  saveIndex --> storage[IndexOnDisk]
-  storage --> loadIndex[LoadIndex]
-  loadIndex --> graph
-  loadIndex --> transModel
+  subgraph indexPipeline [Indexing Pipeline]
+    chunker["Chunker: fixed-window / sentence"]
+    topicFit["TopicModel.fit: BERTopic or LDA"]
+    topicXform["TopicModel.transform"]
+    indexer["CorpusIndexer"]
+  end
 
-  user --> queryText[QueryText]
-  queryText --> client
-  client --> queryHandler[Query]
+  corpus --> chunker
+  corpus --> topicFit
+  chunker -->|"chunks c1 .. cn"| indexer
+  topicFit --> topicXform
+  topicXform -->|"P(t | chunk)"| indexer
 
-  queryHandler --> qInit[QueryInitializer]
-  qInit --> topicPrior["TopicPrior P0(t|q)"]
-  topicPrior --> startState["InitialState (v_{t-2},v_{t-1})"]
+  subgraph graphLayer ["Graph G = (V, E) where V = T U C"]
+    tNodes["TopicNodes T: t:0, t:1, ..."]
+    cNodes["ChunkNodes C: c:0, c:1, ..."]
+    adj["Weighted Directed Edges A_ij = w_ij"]
+  end
 
-  startState --> traversal[TraversalEngine]
-  transModel --> traversal
-  graph --> traversal
+  indexer -->|"create nodes"| tNodes
+  indexer -->|"create nodes"| cNodes
+  tNodes --> adj
+  cNodes --> adj
 
-  traversal --> paths[VisitedPaths]
-  paths --> scorer[QueryScorer]
-  scorer --> nodeScores[NodeScores]
+  subgraph transLayer ["Transition Model: 2nd-Order Markov"]
+    seqs["Topic sequences per document"]
+    p2["P2(k|i,j) = count(i,j,k) / Sum_k count(i,j,k)"]
+    p1["P1(k|j) = count(j,k) / Sum_k count(j,k)"]
+    blend["Blended: P = lambda * P2 + (1 - lambda) * P1"]
+  end
 
-  nodeScores --> ctxAgg[ContextAggregator]
-  graph --> ctxAgg
-  ctxAgg --> results[ContextChunks]
+  indexer -->|"extract sequences"| seqs
+  seqs --> p2
+  seqs --> p1
+  p2 --> blend
+  p1 --> blend
 
-  results --> client
-  client --> user
+  subgraph learnLayer [Learning Layer]
+    laplace["Laplace smoothing: (count + alpha) / (total + alpha * V)"]
+    dirichlet["Dirichlet smoothing: alpha = prior_mass / V"]
+    entCtrl["Entropy control: H(P) = -Sum p * log p"]
+    tempRescale["Temperature rescaling"]
+    rlHook["RL hook: pi(v_t | S) with reward signal"]
+  end
 
-  traversal --> explainData["Path+TransitionInfo"]
-  explainData --> explainAPI[Explain]
-  explainAPI --> user
+  laplace --> p2
+  dirichlet --> p1
+  entCtrl --> tempRescale
+  tempRescale -->|"adjust sharpness"| blend
+  rlHook -->|"reweight transitions"| blend
+
+  subgraph queryPipe [Query Pipeline]
+    qInit["QueryInitializer"]
+    topicPrior["Topic prior: P0(t|q) prop. Sum_w TFIDF(w,t)"]
+    startSt["Initial state: top-2 topics as (v_t-2, v_t-1)"]
+  end
+
+  query --> qInit
+  topicFit -->|"trained model"| qInit
+  qInit --> topicPrior
+  topicPrior --> startSt
+
+  subgraph travEng [Traversal Engine]
+    beam["Beam Search: top-K paths by Sum log P(k|i,j)"]
+    rw["Random Walk: v_t ~ P(v_t | v_t-1, v_t-2)"]
+    ppr["Personalized PageRank: R = alpha * T * R + (1 - alpha) * P0"]
+  end
+
+  startSt --> beam
+  startSt --> rw
+  topicPrior --> ppr
+  blend -->|"transition probs"| beam
+  blend -->|"transition probs"| rw
+  adj -->|"adjacency"| ppr
+
+  subgraph scoreAgg [Scoring and Aggregation]
+    scorer["Score(c) = Sum_paths P(path -> c)"]
+    ctxAgg["ContextAggregator: top-K + diversity re-ranking"]
+  end
+
+  beam --> scorer
+  rw --> scorer
+  ppr --> scorer
+  scorer --> ctxAgg
+  adj -->|"chunk lookup"| ctxAgg
+
+  subgraph outputLayer [Output]
+    results["Retrieved Context Chunks"]
+    explainOut["Explain: traversal paths + transition probs + topic keywords"]
+  end
+
+  ctxAgg --> results
+  scorer --> explainOut
+
+  subgraph storageLayer [Persistence]
+    saveOp["Save: graph.json + transition.json + config.json"]
+    loadOp["Load: reconstruct Graph + TransitionModel"]
+  end
+
+  adj -->|"serialize"| saveOp
+  blend -->|"serialize"| saveOp
+  loadOp -->|"deserialize"| adj
+  loadOp -->|"deserialize"| blend
 ```
