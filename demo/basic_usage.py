@@ -1,3 +1,11 @@
+"""
+Demo: intent-conditioned navigation over the Attention Is All You Need paper.
+
+Shows how each traversal intent (deepen, broaden, compare, apply, clarify, neutral)
+steers the graph walk and retrieves different context. Each section runs a query
+with that intent and prints the path taken plus a short explanation of the intent.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,10 +15,39 @@ from bettermem.api.client import BetterMem
 from bettermem.api.config import BetterMemConfig
 from bettermem.core.nodes import ChunkNode
 from bettermem.indexing.structure_aware_chunker import StructureAwareChunker
+from bettermem.retrieval.intent import TraversalIntent
 from bettermem.topic_modeling.semantic_hierarchical import SemanticHierarchicalTopicModel
 
 
 CORPUS_PATH = Path(__file__).resolve().parent / "attentionIsAllYouNeed.txt"
+
+# Short explanations for each intent (for the demo output)
+INTENT_EXPLANATIONS = {
+    TraversalIntent.NEUTRAL: (
+        "No structural bias; next topic is chosen by relevance to the query and "
+        "continuity with the current topic. Good for general retrieval."
+    ),
+    TraversalIntent.DEEPEN: (
+        "Prefers moving to child nodes (more specific subtopics). Use when you "
+        "want more detail or a deeper explanation of the current topic."
+    ),
+    TraversalIntent.BROADEN: (
+        "Prefers moving to the parent node (broader topic). Use when you want "
+        "the big picture or how the current topic fits in context."
+    ),
+    TraversalIntent.COMPARE: (
+        "Prefers moving to sibling nodes (same parent). Use when you want to "
+        "compare alternatives or see related subtopics at the same level."
+    ),
+    TraversalIntent.APPLY: (
+        "Prefers moving to semantically related topics (e.g. via topic-topic edges). "
+        "Use when you want applications, examples, or related domains."
+    ),
+    TraversalIntent.CLARIFY: (
+        "Prefers high-similarity semantic neighbors. Use when the current topic "
+        "is unclear and you want a closely related explanation."
+    ),
+}
 
 
 def _load_corpus() -> str:
@@ -18,31 +55,38 @@ def _load_corpus() -> str:
     return CORPUS_PATH.read_text(encoding="utf-8", errors="replace")
 
 
-def _print_results(label: str, contexts: Sequence[ChunkNode]) -> None:
-    print(f"\n=== {label} ===")
+def _print_results(label: str, contexts: Sequence[ChunkNode], max_items: int = 3) -> None:
+    print(f"  Top results:")
     if not contexts:
-        print("No contexts returned.")
+        print("    (none)")
         return
-
-    for i, chunk in enumerate(contexts, start=1):
+    for i, chunk in enumerate(contexts[:max_items], start=1):
         text = str(chunk.metadata.get("text", "")) if chunk.metadata is not None else ""
         snippet = text.strip().replace("\n", " ")
-        if len(snippet) > 280:
-            snippet = snippet[:280] + "..."
-        # Avoid Windows console encoding errors: keep ASCII + replace others with '?'.
+        if len(snippet) > 120:
+            snippet = snippet[:120] + "..."
         snippet = "".join(c if ord(c) < 128 else "?" for c in snippet)
-        print(f"[{i}] source={CORPUS_PATH.name}, doc_id={chunk.document_id}, position={chunk.position}")
-        print(f"    {snippet}")
+        print(f"    [{i}] {snippet}")
+
+
+def _print_explanation(explanation: dict) -> None:
+    """Print path and prior from the last query explanation."""
+    path = explanation.get("path") or []
+    prior = explanation.get("prior", {})
+    print(f"  Path ({len(path)} nodes): {path[:8]}{'...' if len(path) > 8 else ''}")
+    if prior:
+        top = sorted(prior.items(), key=lambda x: -x[1])[:3]
+        print(f"  Prior (top): {[(n, round(p, 3)) for n, p in top]}")
 
 
 def main() -> None:
     corpus_document = _load_corpus()
-    query_text = "attention mechanism transformer self-attention"
+    base_query = "attention mechanism transformer"
 
     config = BetterMemConfig(
         order=2,
-        max_steps=16,
-        navigation_temperature=0.8,
+        max_steps=12,
+        navigation_temperature=0.9,
         navigation_greedy=False,
     )
     topic_model = SemanticHierarchicalTopicModel(
@@ -58,48 +102,52 @@ def main() -> None:
     print("Index built.")
     print("Discovered hierarchy (coarse -> sub-topics, sample keywords):")
     for coarse_id, sub_ids in topic_model.get_hierarchy().items():
-        kws = topic_model.get_topic_keywords(sub_ids[0], top_k=5) if sub_ids else []
+        kws = topic_model.get_topic_keywords(sub_ids[0], top_k=4) if sub_ids else []
         print(f"  Coarse {coarse_id} -> {sub_ids}: e.g. {kws}")
     print()
 
-    # 1) Intent-conditioned navigation (default)
-    results = client.query(
-        query_text,
-        top_k=5,
-    )
-    _print_results("Intent-conditioned results", results)  # type: ignore[arg-type]
+    # Showcase each intent type with the same base query
+    intents_to_show = [
+        TraversalIntent.NEUTRAL,
+        TraversalIntent.DEEPEN,
+        TraversalIntent.BROADEN,
+        TraversalIntent.COMPARE,
+        TraversalIntent.APPLY,
+        TraversalIntent.CLARIFY,
+    ]
 
-    # 2) Same query with path trace to inspect navigation
-    results_with_trace = client.query(
-        query_text,
-        steps=8,
-        top_k=5,
-        path_trace=True,
-    )
-    _print_results("Intent-conditioned (path trace)", results_with_trace)  # type: ignore[arg-type]
+    for intent in intents_to_show:
+        title = f"Intent: {intent.value.upper()}"
+        print("\n" + "=" * 60)
+        print(title)
+        print("=" * 60)
+        print(f"  Explanation: {INTENT_EXPLANATIONS[intent]}")
+        print()
 
-    explanation = client.explain() or {}
-    print("\n--- Explanation ---")
-    print(f"Strategy: {explanation.get('strategy')}")
-    print(f"Intent: {explanation.get('intent')}")
-    prior = explanation.get("prior", {})
-    print(f"Prior topics: {list(prior.keys())[:5]}")
-    paths = explanation.get("paths", [])
-    if paths:
-        print(f"Number of paths: {len(paths)}")
-        print(f"First path (up to 10 nodes): {paths[0][:10]}")
+        results = client.query(
+            base_query,
+            intent=intent,
+            steps=10,
+            top_k=5,
+            path_trace=True,
+        )
+        explanation = client.explain() or {}
+        _print_explanation(explanation)
+        print()
+        _print_results(f"Results ({intent.value})", results, max_items=3)
 
-    # 4) Persistence: save and reload client
+    # Persistence
     save_dir = Path(__file__).resolve().parent / "demo_index"
-    print(f"\nSaving index to: {save_dir}")
+    print("\n" + "=" * 60)
+    print("Persistence")
+    print("=" * 60)
+    print(f"Saving index to: {save_dir}")
     client.save(str(save_dir))
-
     print("Reloading client from disk...")
     reloaded = BetterMem.load(str(save_dir))
-    reload_results = reloaded.query(query_text, top_k=3)
-    _print_results("Reloaded client results", reload_results)  # type: ignore[arg-type]
+    reload_results = reloaded.query(base_query, top_k=3)
+    _print_results("Reloaded client (neutral)", reload_results, max_items=2)
 
 
 if __name__ == "__main__":
     main()
-

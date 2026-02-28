@@ -216,6 +216,16 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
             return emb.tolist()
         return emb[0].tolist()
 
+    def embed_texts(self, texts: Sequence[str]) -> Optional[Sequence[Sequence[float]]]:
+        """Return embedding vectors for a batch of texts (same encoder as chunks)."""
+        if not texts or self._coarse_centers is None:
+            return None
+        model = self._get_embedding_model()
+        emb = model.encode(list(texts), convert_to_numpy=True)
+        if emb.ndim == 1:
+            return [emb.tolist()]
+        return [emb[i].tolist() for i in range(emb.shape[0])]
+
     def get_coarse_centroid(self, coarse_id: int) -> Optional[Sequence[float]]:
         """Return the coarse-level cluster center for hierarchy root nodes."""
         if self._coarse_centers is None or coarse_id >= len(self._coarse_centers):

@@ -56,15 +56,30 @@ def _get_topic_candidates(graph: "Graph", current_id: str) -> List[str]:
 
 
 def _repetition_penalty(node_id: str, path_history: Sequence[str], delta: float) -> float:
-    """Return penalty for having visited node_id (delta per visit)."""
+    """Return penalty for having visited node_id; quadratic in count to strongly discourage revisits."""
     count = sum(1 for x in path_history if x == node_id)
-    return delta * count
+    return delta * (count * count)
+
+
+def _backtrack_penalty(candidate_id: str, path_history: Sequence[str], penalty: float) -> float:
+    """Return penalty for going back to the node we just came from (prevents oscillation).
+
+    path_history[-1] is the current node; path_history[-2] is the node we
+    arrived from. Penalize if the candidate equals [-2].
+    """
+    if penalty <= 0 or len(path_history) < 2:
+        return 0.0
+    if path_history[-2] == candidate_id:
+        return penalty
+    return 0.0
 
 
 class IntentConditionedPolicy:
     """Policy that scores and selects next topic node given v_t, I_t, S_t.
 
-    Score(k) = α·cos(μ_k, q) + β·cos(μ_k, μ_i) + γ·R_intent(i,k) − δ·repetition_penalty
+    Score(k) = α·cos(μ_k, q) + β·cos(μ_k, μ_i) + γ·R_intent(i,k)
+               + novelty_bonus·[k not in path] + prior_weight·prior(k)
+               − δ·rep_penalty − backtrack_penalty
     """
 
     def __init__(
@@ -74,13 +89,19 @@ class IntentConditionedPolicy:
         alpha: float = 0.5,
         beta: float = 0.3,
         gamma: float = 0.5,
-        delta: float = 0.3,
+        delta: float = 0.5,
+        backtrack_penalty: float = 5.0,
+        novelty_bonus: float = 0.3,
+        prior_weight: float = 0.2,
     ) -> None:
         self._graph = graph
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
         self.delta = delta
+        self.backtrack_penalty = backtrack_penalty
+        self.novelty_bonus = novelty_bonus
+        self.prior_weight = prior_weight
 
     def score_candidate(
         self,
@@ -110,8 +131,17 @@ class IntentConditionedPolicy:
         term_intent = self.gamma * r_intent(current_id, candidate_id, intent, self._graph)
 
         rep = _repetition_penalty(candidate_id, state.path_history, self.delta)
+        backtrack = _backtrack_penalty(candidate_id, state.path_history, self.backtrack_penalty)
 
-        return term_relevance + term_continuity + term_intent - rep
+        term_novelty = 0.0
+        if self.novelty_bonus > 0 and candidate_id not in state.path_history:
+            term_novelty = self.novelty_bonus
+
+        term_prior = 0.0
+        if self.prior_weight > 0 and state.prior:
+            term_prior = self.prior_weight * state.prior.get(candidate_id, 0.0)
+
+        return term_relevance + term_continuity + term_intent + term_novelty + term_prior - rep - backtrack
 
     def next_distribution(
         self,

@@ -58,3 +58,10 @@ class BaseTopicModel(ABC):
         """
         return None
 
+    def embed_texts(self, texts: Sequence[str]) -> Optional[Sequence[Sequence[float]]]:
+        """Return embedding vectors for a batch of texts, if available.
+
+        Used by explain() to attach chunk embeddings to the path. Default returns None.
+        """
+        return None
+

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from bettermem.core.edges import EdgeKind
 from bettermem.core.graph import Graph
 from bettermem.core.navigation_policy import IntentConditionedPolicy
 from bettermem.core.transition_model import TransitionModel
@@ -191,6 +192,9 @@ class BetterMem:
             beta=self.config.navigation_beta,
             gamma=self.config.navigation_gamma,
             delta=self.config.navigation_delta,
+            backtrack_penalty=self.config.navigation_backtrack_penalty,
+            novelty_bonus=self.config.navigation_novelty_bonus,
+            prior_weight=self.config.navigation_prior_weight,
         )
         traversal_res = self._traversal_engine.intent_conditioned_navigate(
             start_nodes=[start_node],
@@ -210,32 +214,138 @@ class BetterMem:
             top_k=top_k,
             diversity=diversity,
         )
-        explanation = {
-            "strategy": "intent_conditioned",
-            "intent": intent_val.value,
-            "prior": prior,
-        }
-        if path_trace:
-            explanation["paths"] = traversal_res.paths
-        self._last_explanation = explanation
+        self._last_explanation = self._build_structured_explanation(
+            paths=traversal_res.paths if path_trace else [],
+            prior=prior,
+            intent_val=intent_val,
+            include_embeddings=True,
+        )
         return list(contexts)
 
     # ------------------------------------------------------------------
     # Explanations
     # ------------------------------------------------------------------
-    def explain(self) -> Any:
+    def explain(self, *, include_embeddings: bool = True) -> Any:
         """Return a structured explanation of the last query.
 
-        The explanation is expected to include:
-        - Traversal path(s).
-        - Transition probabilities.
-        - Topic transitions and their associated keywords.
+        When path_trace was True for the query, the explanation includes:
+        - strategy: traversal strategy used (e.g. "intent_conditioned").
+        - intent: inferred or overridden intent (e.g. "neutral", "deepen").
+        - prior: topic prior over nodes.
+        - path: list of topic node ids visited.
+        - path_steps: for each step, topic node details and associated chunks
+          (chunk_id, text_snippet, document_id, position, topic_weight,
+          and optionally embedding when include_embeddings and model supports it).
+        - chunks_along_path: flattened list of chunks for all nodes traveled
+          (deduplicated by chunk_id), with optional embedding references.
+
+        If include_embeddings is False, embedding fields are omitted from the copy.
         """
-        return self._last_explanation
+        if self._last_explanation is None:
+            return None
+        if include_embeddings:
+            return self._last_explanation
+
+        def strip_embeddings(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {k: strip_embeddings(v) for k, v in obj.items() if k != "embedding"}
+            if isinstance(obj, list):
+                return [strip_embeddings(x) for x in obj]
+            return obj
+
+        return strip_embeddings(dict(self._last_explanation))
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _build_structured_explanation(
+        self,
+        paths: List[List[str]],
+        prior: Dict[str, float],
+        intent_val: TraversalIntent,
+        *,
+        include_embeddings: bool = True,
+    ) -> Dict[str, Any]:
+        """Build a structured explanation with path steps and chunk embeddings."""
+        from bettermem.core.nodes import ChunkNode, NodeKind, TopicNode
+
+        explanation: Dict[str, Any] = {
+            "strategy": "intent_conditioned",
+            "intent": intent_val.value,
+            "prior": prior,
+        }
+        if not paths:
+            return explanation
+
+        explanation["path"] = paths[0] if paths else []
+        explanation["paths"] = paths
+        path_node_ids = explanation["path"]
+        if not path_node_ids or self._graph is None:
+            return explanation
+
+        path_steps: List[Dict[str, Any]] = []
+        chunk_texts_for_embed: List[str] = []
+        chunk_embed_indices: List[tuple[int, int]] = []  # (step_idx, chunk_idx_in_step)
+
+        for step_idx, node_id in enumerate(path_node_ids):
+            node = self._graph.get_node(node_id)
+            if node is None or node.kind != NodeKind.TOPIC:
+                path_steps.append({"node_id": node_id, "label": None, "keywords": None, "level": None, "parent_id": None, "chunks": []})
+                continue
+
+            topic = node if isinstance(node, TopicNode) else None
+            step_info: Dict[str, Any] = {
+                "node_id": node_id,
+                "label": topic.label if topic else None,
+                "keywords": topic.keywords if topic else None,
+                "level": topic.level if topic else None,
+                "parent_id": topic.parent_id if topic else None,
+                "chunks": [],
+            }
+
+            neighbors = self._graph.get_neighbors(node_id)
+            for neigh_id, weight in neighbors.items():
+                if self._graph.get_edge_kind(node_id, neigh_id) != EdgeKind.TOPIC_CHUNK:
+                    continue
+                neigh = self._graph.get_node(neigh_id)
+                if neigh is None or neigh.kind != NodeKind.CHUNK:
+                    continue
+                chunk = neigh if isinstance(neigh, ChunkNode) else None
+                text = (chunk.metadata or {}).get("text", "") if chunk else ""
+                text_snippet = (text[:500] + "...") if len(text) > 500 else text
+                chunk_entry: Dict[str, Any] = {
+                    "chunk_id": neigh_id,
+                    "text_snippet": text_snippet,
+                    "document_id": getattr(chunk, "document_id", None) if chunk else None,
+                    "position": getattr(chunk, "position", None) if chunk else None,
+                    "topic_weight": float(weight),
+                }
+                step_info["chunks"].append(chunk_entry)
+                if include_embeddings and text:
+                    chunk_texts_for_embed.append(text)
+                    chunk_embed_indices.append((step_idx, len(step_info["chunks"]) - 1))
+
+            path_steps.append(step_info)
+
+        explanation["path_steps"] = path_steps
+
+        if chunk_texts_for_embed and self._topic_model is not None and hasattr(self._topic_model, "embed_texts"):
+            embeddings = self._topic_model.embed_texts(chunk_texts_for_embed)
+            if embeddings is not None and len(embeddings) == len(chunk_embed_indices):
+                for (step_idx, chunk_idx), emb in zip(chunk_embed_indices, embeddings):
+                    path_steps[step_idx]["chunks"][chunk_idx]["embedding"] = list(emb)
+
+        seen_chunk_ids: set = set()
+        all_chunk_entries = []
+        for step_idx, step in enumerate(path_steps):
+            for c in step.get("chunks", []):
+                chunk_id = c.get("chunk_id")
+                if chunk_id and chunk_id not in seen_chunk_ids:
+                    seen_chunk_ids.add(chunk_id)
+                    all_chunk_entries.append({**c, "from_step": step_idx})
+        explanation["chunks_along_path"] = all_chunk_entries
+        return explanation
+
     def _scores_to_chunk_space(self, scores: dict[str, float]) -> dict[str, float]:
         """Project node-level scores into chunk space using the graph structure.
 

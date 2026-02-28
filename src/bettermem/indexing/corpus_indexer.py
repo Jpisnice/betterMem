@@ -50,14 +50,13 @@ class CorpusIndexer:
         """End-to-end indexing pipeline."""
         # 1. Chunk corpus
         chunks = self._chunker.chunk(corpus)
-
-        # 2. Fit topic model and get topic distributions for chunks
-        #    (fit on original corpus text for richer representations)
-        texts = list(corpus)
-        if texts:
-            self._topic_model.fit(texts)
-
         chunk_texts = [c.text for c in chunks]
+
+        # 2. Fit topic model on chunks so clustering discovers multiple topics
+        #    even from a single long document.
+        if chunk_texts:
+            self._topic_model.fit(chunk_texts)
+
         topic_dists = self._topic_model.transform(chunk_texts)
 
         # 3. Create topic nodes and chunk nodes, and connect topic–chunk edges

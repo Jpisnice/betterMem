@@ -53,9 +53,24 @@ class BetterMemConfig(BaseModel):
         description="Weight for structural fit R_intent(i,k) in intent-conditioned policy.",
     )
     navigation_delta: float = Field(
+        default=0.5,
+        ge=0.0,
+        description="Repetition penalty (quadratic in visit count) in intent-conditioned policy.",
+    )
+    navigation_backtrack_penalty: float = Field(
+        default=5.0,
+        ge=0.0,
+        description="Penalty for moving back to the previous node (prevents parent-child oscillation).",
+    )
+    navigation_novelty_bonus: float = Field(
         default=0.3,
         ge=0.0,
-        description="Repetition penalty per visit in intent-conditioned policy.",
+        description="Bonus added for candidates not yet visited (encourages exploration).",
+    )
+    navigation_prior_weight: float = Field(
+        default=0.2,
+        ge=0.0,
+        description="Weight for the topic prior P(topic|query) in candidate scoring.",
     )
     navigation_temperature: float = Field(
         default=1.0,
