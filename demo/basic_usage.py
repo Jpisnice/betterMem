@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from collections import Counter
 from pathlib import Path
 from typing import Iterable, List, Mapping, Sequence
 
@@ -8,34 +10,76 @@ from bettermem.api.config import BetterMemConfig
 from bettermem.core.nodes import ChunkNode
 from bettermem.topic_modeling.base import BaseTopicModel
 
+# Common stopwords so topics are built from content words in the file.
+_STOP = frozenset(
+    "a an the and or but in on at to for of with by from as is was are were be been being have has had do does did will would could should may might must can this that these those it its i we you he she they".split()
+)
 
-class ToyTopicModel(BaseTopicModel):
-    """Minimal topic model for console demos.
 
-    - Creates two topics (0 and 1).
-    - Alternates assignments for successive chunks so both topics appear.
-    - Provides a simple two-topic prior for queries.
+def _tokenize(text: str) -> List[str]:
+    """Lowercase tokenize; keep only alphabetic tokens of length >= 2."""
+    tokens = re.findall(r"[a-zA-Z]+", text.lower())
+    return [t for t in tokens if len(t) >= 2 and t not in _STOP]
+
+
+class ContentTopicModel(BaseTopicModel):
+    """Topic model that derives topics from the same corpus file.
+
+    - fit(): builds vocabulary from the document(s), then forms N topics by
+      partitioning the top frequent content words. Each topic is a set of
+      keywords from the file.
+    - transform() / get_topic_distribution_for_query(): assign mass to topics
+      by counting how many of each topic's keywords appear in the chunk/query.
+    So all topics and assignments come from the same file's context.
     """
 
+    def __init__(self, num_topics: int = 5, words_per_topic: int = 25) -> None:
+        self.num_topics = max(1, num_topics)
+        self.words_per_topic = max(1, words_per_topic)
+        self._topic_keywords: List[List[str]] = []
+
     def fit(self, documents: Iterable[str]) -> None:
-        # No heavy training; we just consume the iterator.
-        _ = list(documents)
+        all_tokens: List[str] = []
+        for doc in documents:
+            all_tokens.extend(_tokenize(doc))
+        counts = Counter(all_tokens)
+        # Top words by frequency, excluding stopwords (already filtered in _tokenize).
+        top_words = [w for w, _ in counts.most_common(self.num_topics * self.words_per_topic)]
+        self._topic_keywords = []
+        for i in range(self.num_topics):
+            start = i * self.words_per_topic
+            end = min(start + self.words_per_topic, len(top_words))
+            self._topic_keywords.append(top_words[start:end])
+        # Ensure we have exactly num_topics (pad with first topic's words if needed).
+        while len(self._topic_keywords) < self.num_topics:
+            self._topic_keywords.append(self._topic_keywords[0][: self.words_per_topic])
+
+    def _text_to_topic_scores(self, text: str) -> Mapping[int, float]:
+        tokens = set(_tokenize(text))
+        if not tokens:
+            # Uniform over topics if no tokens.
+            n = len(self._topic_keywords)
+            return {i: 1.0 / n for i in range(n)}
+        scores: List[float] = []
+        for kw_list in self._topic_keywords:
+            overlap = sum(1 for w in kw_list if w in tokens)
+            scores.append(overlap + 0.1)  # smoothing
+        total = sum(scores)
+        if total <= 0:
+            n = len(self._topic_keywords)
+            return {i: 1.0 / n for i in range(n)}
+        return {i: scores[i] / total for i in range(len(scores))}
 
     def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[int, float]]:
-        dists: List[Mapping[int, float]] = []
-        for idx, _ in enumerate(chunks):
-            if idx % 2 == 0:
-                dists.append({0: 0.7, 1: 0.3})
-            else:
-                dists.append({0: 0.3, 1: 0.7})
-        return dists
+        return [self._text_to_topic_scores(chunk) for chunk in chunks]
 
     def get_topic_keywords(self, topic_id: int, top_k: int = 10) -> List[str]:
-        return [f"kw{topic_id}"] * top_k
+        if 0 <= topic_id < len(self._topic_keywords):
+            return self._topic_keywords[topic_id][:top_k]
+        return []
 
     def get_topic_distribution_for_query(self, text: str) -> Mapping[int, float]:
-        # Fixed two-topic prior used to seed traversal.
-        return {0: 0.6, 1: 0.4}
+        return self._text_to_topic_scores(text)
 
 
 CORPUS_PATH = Path(__file__).resolve().parent / "attentionIsAllYouNeed.txt"
@@ -57,6 +101,8 @@ def _print_results(label: str, contexts: Sequence[ChunkNode]) -> None:
         snippet = text.strip().replace("\n", " ")
         if len(snippet) > 280:
             snippet = snippet[:280] + "..."
+        # Avoid Windows console encoding errors: keep ASCII + replace others with '?'.
+        snippet = "".join(c if ord(c) < 128 else "?" for c in snippet)
         print(f"[{i}] source={CORPUS_PATH.name}, doc_id={chunk.document_id}, position={chunk.position}")
         print(f"    {snippet}")
 
@@ -72,12 +118,17 @@ def main() -> None:
         beam_width=2,
         exploration_factor=0.1,
     )
-    topic_model = ToyTopicModel()
+    topic_model = ContentTopicModel(num_topics=5, words_per_topic=25)
     client = BetterMem(config=config, topic_model=topic_model)
 
     print(f"Building index over {CORPUS_PATH.name} using BetterMem...")
     client.build_index([corpus_document])
-    print("Index built.\n")
+    print("Index built.")
+    print("Topics derived from this file (sample keywords per topic):")
+    for tid in range(min(5, topic_model.num_topics)):
+        kws = topic_model.get_topic_keywords(tid, top_k=8)
+        print(f"  Topic {tid}: {kws}")
+    print()
 
     # 1) Personalized PageRank (default strategy)
     ppr_results = client.query(
