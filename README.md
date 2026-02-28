@@ -138,3 +138,26 @@ flowchart TD
   loadOp -->|"deserialize"| adj
   loadOp -->|"deserialize"| blend
 ```
+
+Testing
+-------
+
+This project uses `pytest` and is configured for the `uv` package manager.
+
+- **Install dependencies with dev extras (includes pytest):**
+
+  ```bash
+  uv sync --extra dev
+  ```
+
+- **Run the full test suite:**
+
+  ```bash
+  uv run pytest
+  ```
+
+- **Run a single test file (example):**
+
+  ```bash
+  uv run pytest tests/test_transition_and_traversal.py
+  ```

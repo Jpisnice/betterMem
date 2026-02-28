@@ -38,7 +38,9 @@ class TopicNode(Node):
         keywords: Optional[list[str]] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        super().__init__(id=id, kind=NodeKind.TOPIC, metadata=dict(metadata or {}))
+        # Explicitly call the base dataclass __init__ instead of super()
+        # to avoid interactions between dataclass(slots=True) and zero-arg super.
+        Node.__init__(self, id=id, kind=NodeKind.TOPIC, metadata=dict(metadata or {}))
         self.label = label
         self.keywords = list(keywords) if keywords is not None else None
 
@@ -58,7 +60,7 @@ class ChunkNode(Node):
         position: Optional[int] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        super().__init__(id=id, kind=NodeKind.CHUNK, metadata=dict(metadata or {}))
+        Node.__init__(self, id=id, kind=NodeKind.CHUNK, metadata=dict(metadata or {}))
         self.document_id = document_id
         self.position = position
 
@@ -76,7 +78,7 @@ class KeywordNode(Node):
         term: Optional[str] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        super().__init__(id=id, kind=NodeKind.KEYWORD, metadata=dict(metadata or {}))
+        Node.__init__(self, id=id, kind=NodeKind.KEYWORD, metadata=dict(metadata or {}))
         self.term = term
 
 
