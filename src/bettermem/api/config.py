@@ -35,7 +35,36 @@ class BetterMemConfig(BaseModel):
     )
     traversal_strategy: Literal["beam", "random_walk", "personalized_pagerank"] = Field(
         default="personalized_pagerank",
-        description="Default traversal strategy for queries.",
+        description="Deprecated; intent-conditioned navigation is used. Kept for backward compatibility.",
+    )
+    navigation_alpha: float = Field(
+        default=0.5,
+        ge=0.0,
+        description="Weight for relevance term cos(μ_k, q) in intent-conditioned policy.",
+    )
+    navigation_beta: float = Field(
+        default=0.3,
+        ge=0.0,
+        description="Weight for continuity term cos(μ_k, μ_i) in intent-conditioned policy.",
+    )
+    navigation_gamma: float = Field(
+        default=0.5,
+        ge=0.0,
+        description="Weight for structural fit R_intent(i,k) in intent-conditioned policy.",
+    )
+    navigation_delta: float = Field(
+        default=0.3,
+        ge=0.0,
+        description="Repetition penalty per visit in intent-conditioned policy.",
+    )
+    navigation_temperature: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Softmax temperature for next-step selection (lower = greedier).",
+    )
+    navigation_greedy: bool = Field(
+        default=False,
+        description="If True, always take argmax next step; else sample from policy.",
     )
     entropy_penalty: float = Field(
         default=0.0,

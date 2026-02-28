@@ -81,7 +81,13 @@ class DummyTransitionModel:
         self.fit_called = False
         self.sequences: list[Sequence[str]] = []
 
-    def fit(self, sequences: Iterable[Sequence[str]]) -> None:
+    def fit(
+        self,
+        sequences: Iterable[Sequence[str]],
+        *,
+        structural_groups_per_seq: Iterable[Sequence[int]] | None = None,
+        **kwargs: object,
+    ) -> None:
         self.fit_called = True
         self.sequences = list(sequences)
 

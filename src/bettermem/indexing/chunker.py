@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Protocol
+from typing import Iterable, List, Optional, Protocol
 
 
 @dataclass
@@ -12,6 +12,7 @@ class Chunk:
     document_id: str
     position: int
     text: str
+    structural_group: Optional[int] = None
 
 
 class BaseChunker(Protocol):

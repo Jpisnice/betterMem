@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 
 class NodeKind(str, Enum):
@@ -29,6 +29,8 @@ class TopicNode(Node):
 
     label: Optional[str] = None
     keywords: Optional[list[str]] = None
+    level: int = 0
+    parent_id: Optional[NodeId] = None
 
     def __init__(
         self,
@@ -36,6 +38,8 @@ class TopicNode(Node):
         *,
         label: Optional[str] = None,
         keywords: Optional[list[str]] = None,
+        level: int = 0,
+        parent_id: Optional[NodeId] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
         # Explicitly call the base dataclass __init__ instead of super()
@@ -43,6 +47,8 @@ class TopicNode(Node):
         Node.__init__(self, id=id, kind=NodeKind.TOPIC, metadata=dict(metadata or {}))
         self.label = label
         self.keywords = list(keywords) if keywords is not None else None
+        self.level = level
+        self.parent_id = parent_id
 
 
 @dataclass(slots=True)
@@ -86,10 +92,31 @@ def make_topic_id(index: int) -> NodeId:
     return f"t:{index}"
 
 
+def make_subtopic_id(coarse: int, sub: int) -> NodeId:
+    return f"t:{coarse}:{sub}"
+
+
 def make_chunk_id(index: int) -> NodeId:
     return f"c:{index}"
 
 
 def make_keyword_id(term: str) -> NodeId:
     return f"k:{term}"
+
+
+def get_topic_centroid(node: Node) -> Optional[Sequence[float]]:
+    """Return the embedding centroid for a topic node if stored in metadata.
+
+    Centroids are stored as metadata['centroid'] (list of floats) during
+    indexing when the topic model provides get_centroid(). Returns None
+    for non-topic nodes or when no centroid is stored.
+    """
+    if not isinstance(node, TopicNode):
+        return None
+    raw = node.metadata.get("centroid")
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)) and all(isinstance(x, (int, float)) for x in raw):
+        return raw
+    return None
 

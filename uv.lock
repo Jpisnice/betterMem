@@ -70,6 +70,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
+    { name = "scikit-learn" },
+    { name = "sentence-transformers" },
 ]
 
 [package.optional-dependencies]
@@ -89,6 +91,8 @@ requires-dist = [
     { name = "gensim", marker = "extra == 'lda'" },
     { name = "pydantic", specifier = ">=2.0.0,<3.0.0" },
     { name = "pytest", marker = "extra == 'dev'" },
+    { name = "scikit-learn", specifier = ">=1.0.0" },
+    { name = "sentence-transformers", specifier = ">=2.0.0" },
 ]
 provides-extras = ["bertopic", "lda", "dev"]
 

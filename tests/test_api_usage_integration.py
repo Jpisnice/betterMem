@@ -49,8 +49,7 @@ def _load_project_readme() -> str:
 def test_api_end_to_end_usage(tmp_path: Path) -> None:
     """End-to-end usage test exercising the BetterMem API surface.
 
-    This uses the project README as the corpus, builds an index via the
-    high-level API, runs queries with different traversal strategies,
+    Builds an index, runs queries via intent-conditioned navigation,
     inspects explanations, and verifies persistence through save/load.
     """
     corpus_document = _load_project_readme()
@@ -59,10 +58,9 @@ def test_api_end_to_end_usage(tmp_path: Path) -> None:
     topic_model = DemoTopicModel()
     config = BetterMemConfig(
         order=2,
-        traversal_strategy="personalized_pagerank",
         max_steps=16,
-        beam_width=4,
-        exploration_factor=0.1,
+        navigation_temperature=0.5,
+        navigation_greedy=True,
     )
 
     client = BetterMem(config=config, topic_model=topic_model)
@@ -70,49 +68,26 @@ def test_api_end_to_end_usage(tmp_path: Path) -> None:
     # Build an index over the README document
     client.build_index([corpus_document])
 
-    # Personalized PageRank strategy (default)
-    ppr_results = client.query(
+    # Intent-conditioned navigation (default)
+    results = client.query(
         query_text,
-        strategy="personalized_pagerank",
-        top_k=5,
-        path_trace=False,
-    )
-    assert ppr_results
-
-    # Random walk strategy with explanation trace
-    rw_results = client.query(
-        query_text,
-        strategy="random_walk",
-        steps=8,
         top_k=5,
         path_trace=True,
     )
+    assert results
+
     explanation = client.explain()
     assert explanation is not None
-    assert explanation.get("strategy") == "random_walk"
+    assert explanation.get("strategy") == "intent_conditioned"
+    assert "intent" in explanation
     assert explanation.get("prior")
     assert "paths" in explanation
-
-    # Beam search strategy should run without errors even if it returns
-    # an empty or small result set depending on the learned transitions.
-    beam_results = client.query(
-        query_text,
-        strategy="beam",
-        steps=8,
-        top_k=5,
-        path_trace=True,
-    )
-    assert beam_results is not None
 
     # Persist the index and configuration and reload via the API
     save_dir = tmp_path / "api_index"
     client.save(str(save_dir))
 
     reloaded = BetterMem.load(str(save_dir))
-    reloaded_results = reloaded.query(
-        query_text,
-        strategy="personalized_pagerank",
-        top_k=3,
-    )
+    reloaded_results = reloaded.query(query_text, top_k=3)
     assert reloaded_results
 

@@ -131,6 +131,8 @@ class Graph:
             if isinstance(node, TopicNode):
                 base["label"] = node.label
                 base["keywords"] = node.keywords
+                base["level"] = node.level
+                base["parent_id"] = node.parent_id
             elif isinstance(node, ChunkNode):
                 base["document_id"] = node.document_id
                 base["position"] = node.position
@@ -172,6 +174,8 @@ class Graph:
                     id=nid,
                     label=n.get("label"),  # type: ignore[arg-type]
                     keywords=n.get("keywords"),  # type: ignore[arg-type]
+                    level=int(n.get("level", 0) or 0),  # type: ignore[arg-type]
+                    parent_id=n.get("parent_id"),  # type: ignore[arg-type]
                     metadata=metadata,
                 )
             elif kind == NodeKind.CHUNK:

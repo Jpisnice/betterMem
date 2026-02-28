@@ -56,33 +56,64 @@ class TransitionModel:
     # ------------------------------------------------------------------
     # Fitting
     # ------------------------------------------------------------------
-    def fit(self, sequences: Iterable[Sequence[NodeId]]) -> None:
+    def fit(
+        self,
+        sequences: Iterable[Sequence[NodeId]],
+        *,
+        structural_groups_per_seq: Optional[Iterable[Sequence[int]]] = None,
+        structural_penalty: float = 0.3,
+    ) -> None:
         """Estimate second-order and first-order counts from sequences.
 
         Parameters
         ----------
         sequences:
             Iterable of node-id sequences, typically at the topic level.
+        structural_groups_per_seq:
+            Optional parallel iterable: one sequence of structural group ids per
+            position for each sequence. Transitions that cross section boundaries
+            (different group) are weighted by structural_penalty.
+        structural_penalty:
+            Weight applied to counts when transition crosses a section boundary.
         """
         self._second_order_counts.clear()
         self._first_order_counts.clear()
         self._second_order_probs.clear()
         self._first_order_probs.clear()
 
+        groups_iter = iter(structural_groups_per_seq) if structural_groups_per_seq else None
+
         for seq in sequences:
             if len(seq) < 2:
                 continue
 
+            groups: Optional[Sequence[int]] = None
+            if groups_iter is not None:
+                try:
+                    groups = next(groups_iter)
+                except StopIteration:
+                    pass
+            if groups is not None and len(groups) != len(seq):
+                groups = None
+
             # First-order counts
-            for a, b in zip(seq[:-1], seq[1:]):
-                self._first_order_counts[a][b] += 1
+            for idx, (a, b) in enumerate(zip(seq[:-1], seq[1:])):
+                w = 1.0
+                if groups is not None and idx + 1 < len(groups):
+                    if groups[idx] != groups[idx + 1]:
+                        w = structural_penalty
+                self._first_order_counts[a][b] += w
 
             # Second-order counts
             if len(seq) < 3:
                 continue
-            for i, j, k in zip(seq[:-2], seq[1:-1], seq[2:]):
+            for idx, (i, j, k) in enumerate(zip(seq[:-2], seq[1:-1], seq[2:])):
+                w = 1.0
+                if groups is not None and idx + 2 < len(groups):
+                    if groups[idx + 1] != groups[idx + 2]:
+                        w = structural_penalty
                 key = (i, j)
-                self._second_order_counts[key][k] += 1
+                self._second_order_counts[key][k] += w
 
     # ------------------------------------------------------------------
     # Probability distributions

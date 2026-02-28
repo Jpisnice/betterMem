@@ -8,10 +8,10 @@ chunk nodes rather than pure vector similarity search.
 
 High-level features:
 
-- Second-order Markov transitions over topic sequences.
-- Interpretable traversal paths via beam search and random walks.
-- Personalized PageRank over the topic graph.
-- Pluggable topic modeling backends (e.g. BERTopic, LDA).
+- **Intent-conditioned navigation**: goal-directed traversal in semantic space conditioned on user intent (deepen, broaden, compare, apply, clarify), approximating textbook-style browsing.
+- Graph built from embedding space: topic centroids, parent-child hierarchy, and semantic (topic-topic) edges.
+- Single policy P(v_{t+1} | v_t, I_t, S_t) with scoring: relevance + structural fit + novelty (repetition penalty).
+- Pluggable topic modeling backends (e.g. BERTopic, SemanticHierarchical with embeddings).
 
 The public entry point is the `BetterMem` client:
 
@@ -29,10 +29,10 @@ For a more complete, runnable console demo, see `demo/basic_usage.py`:
 uv run python demo/basic_usage.py
 ```
 
-Traversal strategies
---------------------
+Intent-conditioned navigation
+------------------------------
 
-When you run a query, BetterMem explores the topic graph to find relevant chunks. You can choose how that exploration works via `traversal_strategy` in config or the `strategy` argument to `query()`. Each strategy has different trade-offs.
+When you run a query, BetterMem navigates the topic graph using a **single policy** conditioned on your query and inferred **intent** (e.g. "explain more" → deepen, "big picture" → broaden, "compare" → siblings). This mirrors how humans browse textbooks: choose a topic, then decide whether to go deeper, broaden, compare alternatives, or clarify.
 
 | Strategy | Best for | Behavior |
 |----------|----------|----------|
@@ -40,23 +40,30 @@ When you run a query, BetterMem explores the topic graph to find relevant chunks
 | **random_walk** | Exploratory, single coherent path | Takes one stochastic walk through the graph, sampling the next topic from the transition model. Good when you want variety across queries or a single “storyline” of topics. |
 | **personalized_pagerank** | Balanced relevance and coverage (default) | Spreads relevance from your query’s topic prior over the whole graph via repeated propagation. Produces a steady-state importance score per node rather than explicit paths. |
 
-**When to use which**
+**Policy**: At each step the next topic is chosen by scoring candidates: **Relevance** cos(μ_k, q), **Structural fit** R_intent(i,k), and **Novelty** (repetition penalty). Scores are softmax-normalized; next node is argmax (greedy) or sampled.
 
-- **beam** — Use when you care about *why* something was retrieved. You get explicit paths (topic → topic → …) and can inspect them with `path_trace=True` and `explain()`. Results are deterministic for the same query and index. Tune with `beam_width` (more paths = more coverage, more cost) and `max_steps`.
+**Intents** (inferred from query text, or overridden in `query(intent=...)`): see table above.
+
+(Deprecated: **beam** — Use when you care about *why* something was retrieved. You get explicit paths (topic → topic → …) and can inspect them with `path_trace=True` and `explain()`. Results are deterministic for the same query and index. Tune with `beam_width` (more paths = more coverage, more cost) and `max_steps`.
 - **random_walk** — Use when you want one coherent trail through the corpus or more diversity between repeated queries. Increase `exploration_factor` to make the walk less greedy and more exploratory. Paths are available in the explanation when `path_trace=True`.
 - **personalized_pagerank** — Use as the default when you want a good balance of relevance and coverage without caring about a single path. It uses your full topic prior (all query-relevant topics) and the graph’s link structure. No path trace; explanations focus on the prior and strategy. Tune with `max_steps` (PageRank iterations).
 
-Example: set the default strategy when creating the client:
+Example: configure policy weights and use path trace:
 
 ```python
 from bettermem import BetterMem
 from bettermem.api.config import BetterMemConfig
 
 client = BetterMem(
-    config=BetterMemConfig(traversal_strategy="beam", beam_width=8)
+    config=BetterMemConfig(
+        navigation_alpha=0.5,
+        navigation_gamma=0.5,
+        navigation_temperature=0.8,
+        navigation_greedy=False,
+    )
 )
-# Or override per query:
-# results = client.query("your question", strategy="random_walk", path_trace=True)
+results = client.query("explain more about attention", path_trace=True)
+# client.explain() includes "intent" and "paths"
 ```
 
 Architecture
@@ -123,36 +130,31 @@ flowchart TD
 
   subgraph queryPipe [Query Pipeline]
     qInit["QueryInitializer"]
-    topicPrior["Topic prior: P0(t|q) prop. Sum_w TFIDF(w,t)"]
-    startSt["Initial state: top-2 topics as (v_t-2, v_t-1)"]
+    topicPrior["Topic prior P0 and semantic state S_t"]
+    intent["Intent I_t from query text"]
   end
 
   query --> qInit
   topicFit -->|"trained model"| qInit
   qInit --> topicPrior
-  topicPrior --> startSt
+  qInit --> intent
 
   subgraph travEng [Traversal Engine]
-    beam["Beam Search: top-K paths by Sum log P(k|i,j)"]
-    rw["Random Walk: v_t ~ P(v_t | v_t-1, v_t-2)"]
-    ppr["Personalized PageRank: R = alpha * T * R + (1 - alpha) * P0"]
+    policy["Intent-conditioned policy: Score(k) = alpha cos mu_k q + beta cos mu_k mu_i + gamma R_intent - delta repeat"]
+    navigate["Navigate: softmax(Score/T), greedy or sample"]
   end
 
-  startSt --> beam
-  startSt --> rw
-  topicPrior --> ppr
-  blend -->|"transition probs"| beam
-  blend -->|"transition probs"| rw
-  adj -->|"adjacency"| ppr
+  topicPrior --> navigate
+  intent --> policy
+  adj -->|"centroids, edges"| policy
+  policy --> navigate
 
   subgraph scoreAgg [Scoring and Aggregation]
-    scorer["Score(c) = Sum_paths P(path -> c)"]
+    scorer["Visit counts from path"]
     ctxAgg["ContextAggregator: top-K + diversity re-ranking"]
   end
 
-  beam --> scorer
-  rw --> scorer
-  ppr --> scorer
+  navigate --> scorer
   scorer --> ctxAgg
   adj -->|"chunk lookup"| ctxAgg
 

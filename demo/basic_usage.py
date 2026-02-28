@@ -1,85 +1,13 @@
 from __future__ import annotations
 
-import re
-from collections import Counter
 from pathlib import Path
-from typing import Iterable, List, Mapping, Sequence
+from typing import Sequence
 
 from bettermem.api.client import BetterMem
 from bettermem.api.config import BetterMemConfig
 from bettermem.core.nodes import ChunkNode
-from bettermem.topic_modeling.base import BaseTopicModel
-
-# Common stopwords so topics are built from content words in the file.
-_STOP = frozenset(
-    "a an the and or but in on at to for of with by from as is was are were be been being have has had do does did will would could should may might must can this that these those it its i we you he she they".split()
-)
-
-
-def _tokenize(text: str) -> List[str]:
-    """Lowercase tokenize; keep only alphabetic tokens of length >= 2."""
-    tokens = re.findall(r"[a-zA-Z]+", text.lower())
-    return [t for t in tokens if len(t) >= 2 and t not in _STOP]
-
-
-class ContentTopicModel(BaseTopicModel):
-    """Topic model that derives topics from the same corpus file.
-
-    - fit(): builds vocabulary from the document(s), then forms N topics by
-      partitioning the top frequent content words. Each topic is a set of
-      keywords from the file.
-    - transform() / get_topic_distribution_for_query(): assign mass to topics
-      by counting how many of each topic's keywords appear in the chunk/query.
-    So all topics and assignments come from the same file's context.
-    """
-
-    def __init__(self, num_topics: int = 5, words_per_topic: int = 25) -> None:
-        self.num_topics = max(1, num_topics)
-        self.words_per_topic = max(1, words_per_topic)
-        self._topic_keywords: List[List[str]] = []
-
-    def fit(self, documents: Iterable[str]) -> None:
-        all_tokens: List[str] = []
-        for doc in documents:
-            all_tokens.extend(_tokenize(doc))
-        counts = Counter(all_tokens)
-        # Top words by frequency, excluding stopwords (already filtered in _tokenize).
-        top_words = [w for w, _ in counts.most_common(self.num_topics * self.words_per_topic)]
-        self._topic_keywords = []
-        for i in range(self.num_topics):
-            start = i * self.words_per_topic
-            end = min(start + self.words_per_topic, len(top_words))
-            self._topic_keywords.append(top_words[start:end])
-        # Ensure we have exactly num_topics (pad with first topic's words if needed).
-        while len(self._topic_keywords) < self.num_topics:
-            self._topic_keywords.append(self._topic_keywords[0][: self.words_per_topic])
-
-    def _text_to_topic_scores(self, text: str) -> Mapping[int, float]:
-        tokens = set(_tokenize(text))
-        if not tokens:
-            # Uniform over topics if no tokens.
-            n = len(self._topic_keywords)
-            return {i: 1.0 / n for i in range(n)}
-        scores: List[float] = []
-        for kw_list in self._topic_keywords:
-            overlap = sum(1 for w in kw_list if w in tokens)
-            scores.append(overlap + 0.1)  # smoothing
-        total = sum(scores)
-        if total <= 0:
-            n = len(self._topic_keywords)
-            return {i: 1.0 / n for i in range(n)}
-        return {i: scores[i] / total for i in range(len(scores))}
-
-    def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[int, float]]:
-        return [self._text_to_topic_scores(chunk) for chunk in chunks]
-
-    def get_topic_keywords(self, topic_id: int, top_k: int = 10) -> List[str]:
-        if 0 <= topic_id < len(self._topic_keywords):
-            return self._topic_keywords[topic_id][:top_k]
-        return []
-
-    def get_topic_distribution_for_query(self, text: str) -> Mapping[int, float]:
-        return self._text_to_topic_scores(text)
+from bettermem.indexing.structure_aware_chunker import StructureAwareChunker
+from bettermem.topic_modeling.semantic_hierarchical import SemanticHierarchicalTopicModel
 
 
 CORPUS_PATH = Path(__file__).resolve().parent / "attentionIsAllYouNeed.txt"
@@ -113,60 +41,53 @@ def main() -> None:
 
     config = BetterMemConfig(
         order=2,
-        traversal_strategy="personalized_pagerank",
         max_steps=16,
-        beam_width=2,
-        exploration_factor=0.1,
+        navigation_temperature=0.8,
+        navigation_greedy=False,
     )
-    topic_model = ContentTopicModel(num_topics=5, words_per_topic=25)
+    topic_model = SemanticHierarchicalTopicModel(
+        n_coarse=5,
+        n_fine_per_coarse=3,
+        random_state=42,
+    )
+    chunker = StructureAwareChunker(window_size=200, overlap=50)
     client = BetterMem(config=config, topic_model=topic_model)
 
     print(f"Building index over {CORPUS_PATH.name} using BetterMem...")
-    client.build_index([corpus_document])
+    client.build_index([corpus_document], chunker=chunker)
     print("Index built.")
-    print("Topics derived from this file (sample keywords per topic):")
-    for tid in range(min(5, topic_model.num_topics)):
-        kws = topic_model.get_topic_keywords(tid, top_k=8)
-        print(f"  Topic {tid}: {kws}")
+    print("Discovered hierarchy (coarse -> sub-topics, sample keywords):")
+    for coarse_id, sub_ids in topic_model.get_hierarchy().items():
+        kws = topic_model.get_topic_keywords(sub_ids[0], top_k=5) if sub_ids else []
+        print(f"  Coarse {coarse_id} -> {sub_ids}: e.g. {kws}")
     print()
 
-    # 1) Personalized PageRank (default strategy)
-    ppr_results = client.query(
+    # 1) Intent-conditioned navigation (default)
+    results = client.query(
         query_text,
-        strategy="personalized_pagerank",
         top_k=5,
     )
-    _print_results("Personalized PageRank results", ppr_results)  # type: ignore[arg-type]
+    _print_results("Intent-conditioned results", results)  # type: ignore[arg-type]
 
-    # 2) Random walk with explanation trace
-    rw_results = client.query(
+    # 2) Same query with path trace to inspect navigation
+    results_with_trace = client.query(
         query_text,
-        strategy="random_walk",
         steps=8,
         top_k=5,
         path_trace=True,
     )
-    _print_results("Random walk results", rw_results)  # type: ignore[arg-type]
+    _print_results("Intent-conditioned (path trace)", results_with_trace)  # type: ignore[arg-type]
 
     explanation = client.explain() or {}
-    print("\n--- Explanation (random_walk) ---")
+    print("\n--- Explanation ---")
     print(f"Strategy: {explanation.get('strategy')}")
+    print(f"Intent: {explanation.get('intent')}")
     prior = explanation.get("prior", {})
     print(f"Prior topics: {list(prior.keys())[:5]}")
     paths = explanation.get("paths", [])
     if paths:
         print(f"Number of paths: {len(paths)}")
         print(f"First path (up to 10 nodes): {paths[0][:10]}")
-
-    # 3) Beam search strategy
-    beam_results = client.query(
-        query_text,
-        strategy="beam",
-        steps=8,
-        top_k=5,
-        path_trace=True,
-    )
-    _print_results("Beam search results", beam_results)  # type: ignore[arg-type]
 
     # 4) Persistence: save and reload client
     save_dir = Path(__file__).resolve().parent / "demo_index"
@@ -175,11 +96,7 @@ def main() -> None:
 
     print("Reloading client from disk...")
     reloaded = BetterMem.load(str(save_dir))
-    reload_results = reloaded.query(
-        query_text,
-        strategy="personalized_pagerank",
-        top_k=3,
-    )
+    reload_results = reloaded.query(query_text, top_k=3)
     _print_results("Reloaded client results", reload_results)  # type: ignore[arg-type]
 
 
