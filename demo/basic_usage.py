@@ -87,6 +87,7 @@ def main() -> None:
         max_steps=20,
         navigation_temperature=0.9,
         navigation_greedy=False,
+        dag_tau=0.7,
     )
     topic_model = SemanticHierarchicalTopicModel(
         n_coarse=10,
