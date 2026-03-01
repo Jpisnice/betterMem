@@ -352,13 +352,15 @@ class BetterMem:
     def _scores_to_chunk_space(self, scores: dict[str, float]) -> dict[str, float]:
         """Project topic-node visit scores into chunk space via topic→chunk edges.
 
-        Intent-conditioned traversal visits topic nodes; this distributes
-        their scores to chunk nodes using TOPIC_CHUNK edge weights.
+        Each topic's total contribution is normalised by its chunk fan-out so
+        that a root topic connected to 50 chunks via ancestor decay doesn't
+        drown out a leaf topic connected to 2 chunks.  Without this, every
+        walk through the root produces near-identical chunk rankings.
         """
         if self._graph is None:
             return {}
 
-        from bettermem.core.nodes import NodeKind  # local import to avoid cycles
+        from bettermem.core.nodes import NodeKind
 
         chunk_scores: dict[str, float] = {}
 
@@ -371,13 +373,20 @@ class BetterMem:
                 chunk_scores[node_id] = chunk_scores.get(node_id, 0.0) + float(score)
             elif node.kind == NodeKind.TOPIC:
                 neighbors = self._graph.get_neighbors(node_id)
+                chunk_edges: list[tuple[str, float]] = []
                 for neigh_id, weight in neighbors.items():
                     neigh = self._graph.get_node(neigh_id)
-                    if neigh is None or neigh.kind != NodeKind.CHUNK:
-                        continue
-                    chunk_scores[neigh_id] = chunk_scores.get(neigh_id, 0.0) + float(
-                        score
-                    ) * float(weight)
+                    if neigh is not None and neigh.kind == NodeKind.CHUNK:
+                        chunk_edges.append((neigh_id, float(weight)))
+                if not chunk_edges:
+                    continue
+                total_weight = sum(w for _, w in chunk_edges)
+                if total_weight <= 0:
+                    continue
+                for neigh_id, weight in chunk_edges:
+                    chunk_scores[neigh_id] = chunk_scores.get(neigh_id, 0.0) + (
+                        float(score) * weight / total_weight
+                    )
 
         return chunk_scores
 

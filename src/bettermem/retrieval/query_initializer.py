@@ -49,58 +49,78 @@ class QueryInitializer:
     def initial_state(
         self, text: str, intent: Optional[TraversalIntent] = None
     ) -> Tuple[tuple[NodeId, NodeId] | None, Mapping[NodeId, float]]:
-        """Choose (v_{t-2}, v_{t-1}) and prior. When intent is set, use intent-aware start and rolled prior."""
-        prior = self.topic_prior(text)
-        if not prior:
-            return None, prior
+        """Choose (v_{t-2}, v_{t-1}) and prior.
+
+        Start node is chosen from the *leaf* prior (before rollup) so that
+        each intent begins at the depth where it has room to navigate:
+        - DEEPEN: parent of best leaf (room to descend into children)
+        - BROADEN: best leaf (room to ascend to parent)
+        - COMPARE: best leaf (room to move to siblings)
+        - APPLY / CLARIFY: best leaf (follow semantic edges)
+
+        The full prior passed to the policy is rolled up to ancestors so the
+        walk can score non-leaf topics too.
+        """
+        leaf_prior = self.topic_prior(text)
+        if not leaf_prior:
+            return None, leaf_prior
 
         rollup = getattr(
             self._topic_model, "rollup_leaf_prior_to_ancestors", None
         )
-        if callable(rollup) and intent is not None and intent != TraversalIntent.NEUTRAL:
-            prior_rolled = rollup(prior)
+
+        if intent is None or intent == TraversalIntent.NEUTRAL:
+            if len(leaf_prior) < 2:
+                return None, leaf_prior
+            sorted_topics = sorted(leaf_prior.items(), key=lambda kv: kv[1], reverse=True)
+            v_t2, _ = sorted_topics[0]
+            v_t1, _ = sorted_topics[1]
+            return (v_t2, v_t1), leaf_prior
+
+        prior = leaf_prior
+        if callable(rollup):
+            prior_rolled = rollup(leaf_prior)
             if prior_rolled:
                 prior = prior_rolled
 
-        if intent is None or intent == TraversalIntent.NEUTRAL:
-            if len(prior) < 2:
-                return None, prior
-            sorted_topics = sorted(prior.items(), key=lambda kv: kv[1], reverse=True)
-            v_t2, _ = sorted_topics[0]
-            v_t1, _ = sorted_topics[1]
-            return (v_t2, v_t1), prior
-
         hierarchy = getattr(self._topic_model, "get_hierarchy", None)
+        get_parents_fn = getattr(self._topic_model, "get_parents", None)
         get_leaves = getattr(self._topic_model, "get_leaf_topic_ids", None)
         leaf_ids = set(get_leaves()) if callable(get_leaves) else set()
         has_children = set()
         if callable(hierarchy):
             has_children = set(hierarchy())
 
-        sorted_prior = sorted(prior.items(), key=lambda kv: kv[1], reverse=True)
-        if not sorted_prior:
+        sorted_leaf = sorted(leaf_prior.items(), key=lambda kv: kv[1], reverse=True)
+        if not sorted_leaf:
             return None, prior
 
+        best_leaf = sorted_leaf[0][0]
+
         if intent == TraversalIntent.DEEPEN:
-            non_leaves_with_children = [
-                (tid, p) for tid, p in sorted_prior if tid in has_children
-            ]
-            if non_leaves_with_children:
-                start = non_leaves_with_children[0][0]
+            if callable(get_parents_fn):
+                parents = get_parents_fn(best_leaf)
+                mid_level = [p for p in parents if p in has_children]
+                if mid_level:
+                    start = mid_level[0]
+                elif parents:
+                    start = parents[0]
+                else:
+                    start = best_leaf
             else:
-                start = sorted_prior[0][0]
+                start = best_leaf
+
         elif intent == TraversalIntent.BROADEN:
-            start = sorted_prior[0][0]
+            start = best_leaf
+
         elif intent == TraversalIntent.COMPARE:
-            leaf_prior_only = [(tid, p) for tid, p in sorted_prior if tid in leaf_ids]
-            if leaf_prior_only:
-                start = leaf_prior_only[0][0]
-            else:
-                start = sorted_prior[0][0]
+            start = best_leaf
+
         elif intent in (TraversalIntent.CLARIFY, TraversalIntent.APPLY):
-            start = sorted_prior[0][0]
+            start = best_leaf
+
         else:
-            start = sorted_prior[0][0]
+            start = best_leaf
 
         return (start, start), prior
 

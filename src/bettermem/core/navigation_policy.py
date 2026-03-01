@@ -71,14 +71,10 @@ def _filter_candidates_by_intent(
     *,
     clarify_similarity_threshold: Optional[float] = None,
 ) -> List[str]:
-    """For the first 1–2 steps: keep only candidates that match the intent relation (hard filter).
+    """For the first 1-2 steps: prefer candidates matching the intent relation.
 
-    deepen: children only; if none, allow ancestors that have children.
-    broaden: parents only.
-    compare: siblings only.
-    clarify: semantic neighbors with weight >= threshold only.
-    apply: semantic neighbors only.
-    neutral: no filter.
+    Each intent has a primary filter and a structured fallback so the walk
+    never dies on the first step just because the ideal relation is absent.
     """
     if intent == TraversalIntent.NEUTRAL or not candidates:
         return list(candidates)
@@ -107,15 +103,62 @@ def _filter_candidates_by_intent(
             if rel == RelationType.SEMANTIC_NEIGHBOR:
                 filtered.append(k)
 
-    if intent == TraversalIntent.DEEPEN and not filtered:
-        children = graph.get_children(current_id)
-        if not children:
+    if filtered:
+        return filtered
+
+    # --- structured fallbacks when primary filter is empty ---
+
+    if intent == TraversalIntent.DEEPEN:
+        # At a leaf: find a sibling that HAS children (deepen into a related subtree)
+        for k in candidates:
+            rel = get_relation_type(graph, current_id, k)
+            if rel == RelationType.SIBLING and graph.get_children(k):
+                filtered.append(k)
+        if not filtered:
+            # No sibling with children — jump to parent's sibling that has
+            # children (explore a different branch at the same depth).
             parents = graph.get_parents(current_id)
             for pid in parents:
-                if graph.get_children(pid):
-                    filtered.append(pid)
+                for uncle in graph.get_siblings(pid):
+                    if graph.get_children(uncle):
+                        filtered.append(uncle)
+            if not filtered:
+                for pid in parents:
+                    if graph.get_children(pid):
+                        filtered.append(pid)
             if not filtered and parents:
                 filtered = list(parents)
+
+    elif intent == TraversalIntent.BROADEN:
+        # At root (no parents): explore other root-level topics or siblings
+        for k in candidates:
+            rel = get_relation_type(graph, current_id, k)
+            if rel == RelationType.SIBLING:
+                filtered.append(k)
+        if not filtered:
+            node = graph.get_node(current_id)
+            if isinstance(node, TopicNode):
+                cur_level = node.level
+                for k in candidates:
+                    k_node = graph.get_node(k)
+                    if isinstance(k_node, TopicNode) and k_node.level <= cur_level:
+                        filtered.append(k)
+
+    elif intent == TraversalIntent.COMPARE:
+        for k in candidates:
+            rel = get_relation_type(graph, current_id, k)
+            if rel in (RelationType.CHILD, RelationType.PARENT):
+                filtered.append(k)
+
+    elif intent in (TraversalIntent.CLARIFY, TraversalIntent.APPLY):
+        for k in candidates:
+            rel = get_relation_type(graph, current_id, k)
+            if rel == RelationType.SIBLING:
+                filtered.append(k)
+
+    if not filtered:
+        return list(candidates)
+
     return filtered
 
 
@@ -231,14 +274,13 @@ class IntentConditionedPolicy:
         if not candidates:
             return {}
 
-        if step_index < 2:
-            candidates = _filter_candidates_by_intent(
-                self._graph,
-                current_id,
-                candidates,
-                intent,
-                clarify_similarity_threshold=self.clarify_similarity_threshold,
-            )
+        candidates = _filter_candidates_by_intent(
+            self._graph,
+            current_id,
+            candidates,
+            intent,
+            clarify_similarity_threshold=self.clarify_similarity_threshold,
+        )
         if not candidates:
             return {}
 

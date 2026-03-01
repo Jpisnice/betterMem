@@ -338,7 +338,15 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
         keywords = self._keywords_per_topic.get(topic_id, [])
         return keywords[:top_k]
 
-    def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[str, float]]:
+    def transform(
+        self, chunks: Iterable[str], *, temperature: float = 0.1
+    ) -> Sequence[Mapping[str, float]]:
+        """Return P(leaf_topic | chunk) for each chunk via cosine-similarity softmax.
+
+        Uses cosine similarity (not negative L2) with temperature scaling so the
+        distribution is peaked enough to produce topic-chunk edges above min_prob,
+        even when there are many leaf topics.
+        """
         import numpy as np
 
         chunk_list = list(chunks)
@@ -360,29 +368,31 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
             u = 1.0 / len(all_ids) if all_ids else 1.0
             return [{tid: u for tid in all_ids} for _ in chunk_list]
 
+        centroid_matrix = np.array(
+            [self._centroids[tid] for tid in leaf_ids], dtype=np.float32
+        )
+        centroid_norms = np.linalg.norm(centroid_matrix, axis=1, keepdims=True)
+        centroid_norms = np.maximum(centroid_norms, 1e-12)
+        centroid_normed = centroid_matrix / centroid_norms
+
         result: List[Mapping[str, float]] = []
         for i in range(emb.shape[0]):
-            e = emb[i]
-            dist_over_leaf: List[tuple[str, float]] = []
-            for tid in leaf_ids:
-                c = self._centroids.get(tid)
-                if c is None:
-                    continue
-                d = np.linalg.norm(np.array(c) - e)
-                dist_over_leaf.append((tid, float(-d)))
-            if not dist_over_leaf:
+            e = emb[i].astype(np.float32)
+            e_norm = np.linalg.norm(e)
+            if e_norm < 1e-12:
                 u = 1.0 / len(leaf_ids)
                 result.append({tid: u for tid in leaf_ids})
                 continue
-            _, neg_dists = zip(*dist_over_leaf)
-            probs = _softmax(np.array(neg_dists))
+            e_normed = e / e_norm
+            cosines = centroid_normed @ e_normed  # shape (n_leaves,)
+            probs = _softmax(cosines / max(temperature, 1e-6))
             total = float(probs.sum())
             if total <= 0:
-                u = 1.0 / len(dist_over_leaf)
-                result.append({tid: u for tid, _ in dist_over_leaf})
+                u = 1.0 / len(leaf_ids)
+                result.append({tid: u for tid in leaf_ids})
             else:
                 result.append(
-                    {tid: float(probs[j]) / total for j, (tid, _) in enumerate(dist_over_leaf)}
+                    {tid: float(probs[j]) / total for j, tid in enumerate(leaf_ids)}
                 )
         return result
 

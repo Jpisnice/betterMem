@@ -26,37 +26,41 @@ class RelationType(str, Enum):
 def get_relation_type(graph: "Graph", source: str, target: str) -> RelationType:
     """Classify the structural relation from source node i to target node k.
 
-    k may be an outgoing neighbor of i, or the parent of i (reverse hierarchy),
-    or a sibling (same parent). Used for intent-conditioned scoring.
+    Hierarchy relations (parent, child, sibling) take priority over edge-kind
+    classification.  Two siblings that also share a TOPIC_TOPIC edge must be
+    classified as SIBLING so that COMPARE intent can find them.
     """
     node_i = graph.get_node(source)
     node_k = graph.get_node(target)
     if node_i is None or node_k is None:
         return RelationType.DISTANT_RELATED
 
-    # Parent: k in get_parents(i) or node_i.parent_ids
+    # --- structural hierarchy (checked first) ---
+
     parents = graph.get_parents(source)
     if target in parents:
         return RelationType.PARENT
     if isinstance(node_i, TopicNode) and target in node_i.parent_ids:
         return RelationType.PARENT
 
-    # Child: edge (i, k) with TOPIC_SUBTOPIC
-    kind_ik = graph.get_edge_kind(source, target)
-    if kind_ik == EdgeKind.TOPIC_SUBTOPIC:
+    children = graph.get_children(source)
+    if target in children:
         return RelationType.CHILD
 
-    # Semantic neighbor: topic-topic or topic-related edge
-    if kind_ik in (EdgeKind.TOPIC_TOPIC, EdgeKind.TOPIC_RELATED):
-        return RelationType.SEMANTIC_NEIGHBOR
-
-    # Sibling: target in get_siblings(source) or shared parent (DAG: any parent in common)
     siblings = graph.get_siblings(source)
     if target in siblings:
         return RelationType.SIBLING
     if isinstance(node_i, TopicNode) and isinstance(node_k, TopicNode) and source != target:
         if set(node_i.parent_ids) & set(node_k.parent_ids):
             return RelationType.SIBLING
+
+    # --- edge-kind fallback ---
+
+    kind_ik = graph.get_edge_kind(source, target)
+    if kind_ik == EdgeKind.TOPIC_SUBTOPIC:
+        return RelationType.CHILD
+    if kind_ik in (EdgeKind.TOPIC_TOPIC, EdgeKind.TOPIC_RELATED):
+        return RelationType.SEMANTIC_NEIGHBOR
 
     return RelationType.DISTANT_RELATED
 

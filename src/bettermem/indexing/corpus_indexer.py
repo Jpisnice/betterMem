@@ -209,10 +209,12 @@ class CorpusIndexer:
             )
             self._graph.add_node(chunk_node)
 
-            # Sparse topic–chunk: top M leaf topics above threshold, then best leaf + ancestors with decay
             leaf_dist = {tid: p for tid, p in dist.items() if tid in leaf_ids_set} if leaf_ids_set else dict(dist)
             items = sorted(leaf_dist.items(), key=lambda kv: kv[1], reverse=True)
             items = [(tid, p) for tid, p in items[:top_m] if p >= min_prob]
+            if not items and leaf_dist:
+                best_tid, best_p = max(leaf_dist.items(), key=lambda kv: kv[1])
+                items = [(best_tid, best_p)]
 
             for leaf_id, weight in items:
                 topic_node = self._graph.get_node(leaf_id)
@@ -222,7 +224,8 @@ class CorpusIndexer:
                 if isinstance(topic_node, TopicNode) and chunk_node.id not in topic_node.chunk_ids:
                     topic_node.chunk_ids.append(chunk_node.id)
 
-                # Attach to ancestors with decayed weight (hierarchical recall)
+                # Attach to ancestors with decayed weight (hierarchical recall).
+                # This propagation allows visiting coarse/mid-level topics (e.g. t:0, t:0.3) to still yield chunks.
                 if ancestor_decay <= 0:
                     continue
                 current = leaf_id
