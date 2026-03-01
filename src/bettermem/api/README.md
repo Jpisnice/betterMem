@@ -13,7 +13,7 @@ Modules
       `max_steps`, `transition_prune_threshold`.
     - `traversal_strategy` (e.g. beam, random walk, personalized PageRank).
     - `entropy_penalty`, `exploration_factor`.
-    - `topic_model_backend` (e.g. `bertopic`, `lda`).
+    - Navigation and traversal knobs (no separate topic backend; semantic hierarchical model is used by default).
   - This captures the high-level behaviour of the system in a validated,
     serializable form.
 - `client.py`:

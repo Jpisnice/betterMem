@@ -11,7 +11,7 @@ High-level features:
 - **Intent-conditioned navigation**: goal-directed traversal in semantic space conditioned on user intent (deepen, broaden, compare, apply, clarify), approximating textbook-style browsing.
 - Graph built from embedding space: topic centroids, parent-child hierarchy, and semantic (topic-topic) edges.
 - Single policy P(v_{t+1} | v_t, I_t, S_t) with scoring: relevance + structural fit + novelty (repetition penalty).
-- Pluggable topic modeling backends (e.g. BERTopic, SemanticHierarchical with embeddings).
+- Semantic hierarchical topic model (embeddings + two-level clustering) for graph building and query priors.
 
 The public entry point is the `BetterMem` client:
 

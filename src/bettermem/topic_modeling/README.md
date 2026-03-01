@@ -1,9 +1,8 @@
 Topic modeling layer
 ====================
 
-The `bettermem.topic_modeling` package abstracts away **how topics are
-learned and exposed**, so the rest of BetterMem can work with a unified
-topic interface.
+The `bettermem.topic_modeling` package provides a unified topic interface
+used for indexing and query priors.
 
 - `base.py`: defines `BaseTopicModel` with:
   - `fit(documents)`: train the model on raw texts.
@@ -12,10 +11,12 @@ topic interface.
   - `get_topic_keywords(topic_id)`: expose top terms per topic.
   - `get_topic_distribution_for_query(text)`: compute query-level
     \(P(t \mid q)\) used for the query prior.
-- `bertopic_adapter.py`: wraps **BERTopic** to implement `BaseTopicModel`
-  with dense topic probability vectors per document or chunk.
-- `lda_adapter.py`: wraps a **Gensim LDA** model, turning bag-of-words into
-  topic distributions via `get_document_topics`.
+  - Optional `get_centroid`, `embed_query`, `embed_texts`, `get_hierarchy`
+    for embedding-based navigation and hierarchical graphs.
+- `semantic_hierarchical.py`: **SemanticHierarchicalTopicModel** — the
+  default implementation. Uses sentence-transformers embeddings and
+  two-level KMeans (coarse then fine per coarse) to build a topic
+  hierarchy with centroids and topic–topic similarity edges.
 
 Math and concepts
 -----------------

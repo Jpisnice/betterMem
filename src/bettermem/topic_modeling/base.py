@@ -7,10 +7,10 @@ from typing import Iterable, List, Mapping, Optional, Sequence
 class BaseTopicModel(ABC):
     """Abstract interface for topic models used by BetterMem.
 
-    Implementations wrap concrete backends such as BERTopic or LDA and
-    expose a unified API in terms of topic IDs and probability
-    distributions. Optional get_centroid and embed_query enable
-    intent-conditioned navigation for embedding-capable backends.
+    The default implementation is SemanticHierarchicalTopicModel, which
+    uses embeddings and two-level clustering. The API is unified in terms
+    of topic IDs and probability distributions. Optional get_centroid and
+    embed_query enable intent-conditioned navigation.
     """
 
     @abstractmethod

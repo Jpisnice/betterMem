@@ -92,10 +92,6 @@ class BetterMemConfig(BaseModel):
         le=1.0,
         description="Controls stochastic exploration in next-step sampling.",
     )
-    topic_model_backend: Literal["bertopic", "lda"] = Field(
-        default="bertopic",
-        description="Default topic modeling backend to use for indexing and query priors.",
-    )
     # Optional reserved fields for future extensions
     index_storage_path: Optional[str] = Field(
         default=None,

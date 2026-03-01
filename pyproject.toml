@@ -17,8 +17,6 @@ dependencies = [
 bettermem = "bettermem:main"
 
 [project.optional-dependencies]
-bertopic = ["bertopic"]
-lda = ["gensim"]
 dev = ["pytest"]
 
 [build-system]

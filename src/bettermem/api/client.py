@@ -14,7 +14,7 @@ from bettermem.retrieval.context_aggregator import ContextAggregator
 from bettermem.retrieval.query_initializer import QueryInitializer
 from bettermem.retrieval.scorer import QueryScorer
 from bettermem.storage.persistence import load_index, save_index
-from bettermem.topic_modeling.bertopic_adapter import BERTopicAdapter
+from bettermem.topic_modeling.semantic_hierarchical import SemanticHierarchicalTopicModel
 from .config import BetterMemConfig
 
 
@@ -87,13 +87,7 @@ class BetterMem:
         )
 
         if self._topic_model is None:
-            if self.config.topic_model_backend == "bertopic":
-                self._topic_model = BERTopicAdapter()
-            else:
-                raise ValueError(
-                    "A topic_model must be provided for backend "
-                    f"{self.config.topic_model_backend!r}."
-                )
+            self._topic_model = SemanticHierarchicalTopicModel()
 
         if chunker is None:
             chunker = FixedWindowChunker()
