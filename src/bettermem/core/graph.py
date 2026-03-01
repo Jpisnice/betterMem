@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, Iterable, Mapping, MutableMapping, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Set, Tuple
 
 from .edges import Edge, EdgeKind
 from .nodes import ChunkNode, KeywordNode, Node, NodeId, NodeKind, TopicNode
@@ -17,12 +17,20 @@ class Graph:
 
     which can be viewed as entries of an adjacency matrix A where
     A_ij = w_ij.
+
+    Optional topic indexes (children_by_parent, parents_by_child, siblings,
+    ancestors) are built by build_topic_indexes() for O(1) hierarchy traversal.
     """
 
     def __init__(self) -> None:
         self._nodes: Dict[NodeId, Node] = {}
         self._neighbors: Dict[NodeId, Dict[NodeId, float]] = defaultdict(dict)
         self._edge_kinds: Dict[Tuple[NodeId, NodeId], EdgeKind] = {}
+        self._children_by_parent: Dict[NodeId, List[NodeId]] = {}
+        self._parents_by_child: Dict[NodeId, List[NodeId]] = {}
+        self._siblings_by_node: Dict[NodeId, List[NodeId]] = {}
+        self._ancestors_by_node: Dict[NodeId, Set[NodeId]] = {}
+        self._topic_indexes_built: bool = False
 
     # ------------------------------------------------------------------
     # Node operations
@@ -63,6 +71,65 @@ class Graph:
 
     def get_edge_kind(self, source: NodeId, target: NodeId) -> Optional[EdgeKind]:
         return self._edge_kinds.get((source, target))
+
+    # ------------------------------------------------------------------
+    # Topic hierarchy indexes (built by build_topic_indexes)
+    # ------------------------------------------------------------------
+    def build_topic_indexes(self) -> None:
+        """Build parent/child/sibling/ancestor indexes from TOPIC_SUBTOPIC edges."""
+        self._children_by_parent = defaultdict(list)
+        self._parents_by_child = defaultdict(list)
+        for source, targets in self._neighbors.items():
+            for target in targets:
+                if self._edge_kinds.get((source, target)) == EdgeKind.TOPIC_SUBTOPIC:
+                    self._children_by_parent[source].append(target)
+                    self._parents_by_child[target].append(source)
+        self._children_by_parent = dict(self._children_by_parent)
+        self._parents_by_child = dict(self._parents_by_child)
+        self._siblings_by_node = {}
+        for node_id, parents in self._parents_by_child.items():
+            siblings: List[NodeId] = []
+            for p in parents:
+                for sib in self._children_by_parent.get(p, []):
+                    if sib != node_id:
+                        siblings.append(sib)
+            self._siblings_by_node[node_id] = list(dict.fromkeys(siblings))
+        self._ancestors_by_node = {}
+        for node_id in set(self._parents_by_child) | set(self._children_by_parent):
+            anc: Set[NodeId] = set()
+            stack = list(self._parents_by_child.get(node_id, []))
+            while stack:
+                p = stack.pop()
+                if p in anc:
+                    continue
+                anc.add(p)
+                stack.extend(self._parents_by_child.get(p, []))
+            self._ancestors_by_node[node_id] = anc
+        self._topic_indexes_built = True
+
+    def get_parents(self, node_id: NodeId) -> List[NodeId]:
+        """Return parent topic node IDs (from TOPIC_SUBTOPIC edges). Empty if indexes not built."""
+        if not self._topic_indexes_built:
+            return []
+        return list(self._parents_by_child.get(node_id, []))
+
+    def get_children(self, node_id: NodeId) -> List[NodeId]:
+        """Return child topic node IDs (from TOPIC_SUBTOPIC edges). Empty if indexes not built."""
+        if not self._topic_indexes_built:
+            return []
+        return list(self._children_by_parent.get(node_id, []))
+
+    def get_siblings(self, node_id: NodeId) -> List[NodeId]:
+        """Return sibling topic node IDs (same parent). Empty if indexes not built."""
+        if not self._topic_indexes_built:
+            return []
+        return list(self._siblings_by_node.get(node_id, []))
+
+    def is_ancestor(self, ancestor_id: NodeId, node_id: NodeId) -> bool:
+        """Return True if ancestor_id is an ancestor of node_id (transitive parent)."""
+        if not self._topic_indexes_built:
+            return False
+        return ancestor_id in self._ancestors_by_node.get(node_id, set())
 
     def iter_edges(self) -> Iterable[Edge]:
         for source, targets in self._neighbors.items():
@@ -132,7 +199,7 @@ class Graph:
                 base["label"] = node.label
                 base["keywords"] = node.keywords
                 base["level"] = node.level
-                base["parent_id"] = node.parent_id
+                base["parent_ids"] = list(node.parent_ids)
                 base["chunk_ids"] = list(node.chunk_ids)
             elif isinstance(node, ChunkNode):
                 base["document_id"] = node.document_id
@@ -175,12 +242,18 @@ class Graph:
             if kind == NodeKind.TOPIC:
                 chunk_ids_raw = n.get("chunk_ids") or []
                 chunk_ids = list(chunk_ids_raw) if isinstance(chunk_ids_raw, list) else []
+                parent_ids_raw = n.get("parent_ids")
+                if parent_ids_raw is not None and isinstance(parent_ids_raw, list):
+                    parent_ids = list(parent_ids_raw)
+                else:
+                    parent_id_val = n.get("parent_id")
+                    parent_ids = [parent_id_val] if parent_id_val is not None else []
                 node = TopicNode(
                     id=nid,
                     label=n.get("label"),  # type: ignore[arg-type]
                     keywords=n.get("keywords"),  # type: ignore[arg-type]
                     level=int(n.get("level", 0) or 0),  # type: ignore[arg-type]
-                    parent_id=n.get("parent_id"),  # type: ignore[arg-type]
+                    parent_ids=parent_ids,
                     chunk_ids=chunk_ids,
                     metadata=metadata,
                 )
@@ -217,5 +290,6 @@ class Graph:
             graph.add_node(graph.get_node(target) or Node(target, NodeKind.TOPIC))
             graph.add_edge(source, target, weight=weight, kind=edge_kind)
 
+        graph.build_topic_indexes()
         return graph
 

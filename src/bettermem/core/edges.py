@@ -9,6 +9,7 @@ from .nodes import NodeId
 
 class EdgeKind(str, Enum):
     TOPIC_TOPIC = "topic-topic"
+    TOPIC_RELATED = "topic-related"  # semantic neighbor (same as TOPIC_TOPIC for relation)
     TOPIC_SUBTOPIC = "topic-subtopic"
     TOPIC_CHUNK = "topic-chunk"
     CHUNK_CHUNK = "chunk-chunk"

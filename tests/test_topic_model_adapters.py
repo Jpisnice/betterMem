@@ -18,10 +18,13 @@ def test_semantic_hierarchical_adapter_basic() -> None:
 
     hierarchy = model.get_hierarchy()
     assert hierarchy
-    for coarse_id, sub_ids in hierarchy.items():
-        assert isinstance(coarse_id, int)
-        assert isinstance(sub_ids, list)
-        assert len(sub_ids) > 0
+    for parent_id, child_ids in hierarchy.items():
+        assert isinstance(parent_id, str)
+        assert parent_id.startswith("t:")
+        assert isinstance(child_ids, list)
+        assert len(child_ids) > 0
+        for cid in child_ids:
+            assert isinstance(cid, str)
 
     q_dist = model.get_topic_distribution_for_query("another query")
     assert q_dist

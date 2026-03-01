@@ -4,7 +4,7 @@ from typing import Iterable, List, Mapping, Sequence
 
 from bettermem.core.graph import Graph
 from bettermem.core.nodes import ChunkNode, Node, NodeKind, make_chunk_id, make_topic_id
-from bettermem.indexing.chunker import FixedWindowChunker
+from bettermem.indexing.chunker import FixedWindowChunker, ParagraphSentenceChunker
 from bettermem.indexing.corpus_indexer import CorpusIndexer
 from bettermem.indexing.keyword_mapper import KeywordToTopicMapper
 from bettermem.learning.smoothing import additive_smoothing
@@ -15,7 +15,7 @@ from bettermem.topic_modeling.base import BaseTopicModel
 
 
 class DummyTopicModel(BaseTopicModel):
-    """Minimal semantic-hierarchical topic model for testing."""
+    """Minimal semantic-hierarchical topic model for testing (path IDs)."""
 
     def __init__(self) -> None:
         self._fit_called = False
@@ -24,19 +24,24 @@ class DummyTopicModel(BaseTopicModel):
         _ = list(documents)
         self._fit_called = True
 
-    def get_hierarchy(self) -> Mapping[int, List[int]]:
-        # One coarse topic with one subtopic (encoded 0 = 0*100+0)
-        return {0: [0]}
+    def get_hierarchy(self) -> Mapping[str, List[str]]:
+        return {"t:0": ["t:0.0"]}
 
-    def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[int, float]]:
-        return [{0: 1.0} for _ in chunks]
+    def get_all_topic_ids(self) -> List[str]:
+        return ["t:0", "t:0.0"]
 
-    def get_topic_keywords(self, topic_id: int, top_k: int = 10) -> List[str]:
+    def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[str, float]]:
+        return [{"t:0.0": 1.0} for _ in chunks]
+
+    def get_topic_keywords(self, topic_id: str, top_k: int = 10) -> List[str]:
         return [f"kw{topic_id}"]
 
-    def get_topic_distribution_for_query(self, text: str) -> Mapping[int, float]:
-        base = {0: 0.6, 100: 0.4} if len(text.split()) > 1 else {0: 1.0}
+    def get_topic_distribution_for_query(self, text: str) -> Mapping[str, float]:
+        base = {"t:0.0": 0.6, "t:1.0": 0.4} if len(text.split()) > 1 else {"t:0.0": 1.0}
         return additive_smoothing({k: int(v * 10) for k, v in base.items()}, alpha=0.0)
+
+    def get_centroid(self, topic_id: str):
+        return None
 
 
 def test_fixed_window_chunker_basic() -> None:
@@ -48,6 +53,22 @@ def test_fixed_window_chunker_basic() -> None:
     assert len(chunks) >= 2
     assert chunks[0].document_id == "0"
     assert chunks[0].position == 0
+
+
+def test_paragraph_sentence_chunker_basic() -> None:
+    chunker = ParagraphSentenceChunker(max_tokens=20)
+    corpus = [
+        "First sentence here. Second sentence there. Third one.\n\n"
+        "New paragraph. One sentence only."
+    ]
+    chunks = chunker.chunk(corpus)
+    assert len(chunks) >= 2
+    assert chunks[0].document_id == "0"
+    assert chunks[0].position == 0
+    assert chunks[0].structural_group is not None
+    assert "First sentence here" in chunks[0].text
+    assert "Second sentence" in chunks[0].text or "Third one" in chunks[0].text
+    assert "New paragraph" in chunks[1].text or any("New paragraph" in c.text for c in chunks)
 
 
 def test_corpus_indexer_builds_graph_and_transitions() -> None:
@@ -123,18 +144,18 @@ def test_context_aggregator_diversity_and_top_k() -> None:
 
 def test_keyword_to_topic_mapper_prior() -> None:
     mapper = KeywordToTopicMapper()
-    mapper.fit({0: ["python", "ai"], 1: ["java"]})
+    mapper.fit({"0": ["python", "ai"], "1": ["java"]})
 
     prior = mapper.topic_prior_from_query("python ai")
     assert prior
-    # All mass should be on topic 0 for this toy setup
-    assert set(prior.keys()) == {0}
+    # All mass should be on topic "0" for this toy setup
+    assert set(prior.keys()) == {"0"}
 
 
 def test_query_initializer_topic_prior_and_initial_state() -> None:
     topic_model = DummyTopicModel()
     mapper = KeywordToTopicMapper()
-    mapper.fit({0: ["alpha"], 1: ["beta"]})
+    mapper.fit({"t:0.0": ["alpha"], "t:1.0": ["beta"]})
     initializer = QueryInitializer(topic_model=topic_model, keyword_mapper=mapper)
 
     pair, prior = initializer.initial_state("alpha beta")

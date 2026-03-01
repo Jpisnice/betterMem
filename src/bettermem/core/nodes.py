@@ -27,14 +27,15 @@ class Node:
 class TopicNode(Node):
     """Topic node for semantic hierarchical traversal (coarse or subtopic).
 
-    Stores centroid for navigation scoring and chunk_ids for fast lookup
-    of associated chunks without scanning edges.
+    Supports polyhierarchy (DAG): parent_ids can have multiple parents.
+    level is minimum depth over parents when DAG is used.
+    parent_id is a backward-compat property: first parent or None.
     """
 
     label: Optional[str] = None
     keywords: Optional[list[str]] = None
     level: int = 0
-    parent_id: Optional[NodeId] = None
+    parent_ids: List[NodeId] = field(default_factory=list)
     chunk_ids: List[NodeId] = field(default_factory=list)
 
     def __init__(
@@ -45,6 +46,7 @@ class TopicNode(Node):
         keywords: Optional[list[str]] = None,
         level: int = 0,
         parent_id: Optional[NodeId] = None,
+        parent_ids: Optional[Sequence[NodeId]] = None,
         chunk_ids: Optional[Sequence[NodeId]] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
@@ -52,8 +54,18 @@ class TopicNode(Node):
         self.label = label
         self.keywords = list(keywords) if keywords is not None else None
         self.level = level
-        self.parent_id = parent_id
+        if parent_ids is not None:
+            self.parent_ids = list(parent_ids)
+        elif parent_id is not None:
+            self.parent_ids = [parent_id]
+        else:
+            self.parent_ids = []
         self.chunk_ids = list(chunk_ids) if chunk_ids is not None else []
+
+    @property
+    def parent_id(self) -> Optional[NodeId]:
+        """First parent, for backward compatibility. None if no parents."""
+        return self.parent_ids[0] if self.parent_ids else None
 
 
 @dataclass(slots=True)
@@ -106,6 +118,13 @@ def make_topic_id(index: int) -> NodeId:
 
 def make_subtopic_id(coarse: int, sub: int) -> NodeId:
     return f"t:{coarse}:{sub}"
+
+
+def make_topic_path_id(path: Sequence[int]) -> NodeId:
+    """Build path-style topic ID (e.g. [0, 1, 2] -> 't:0.1.2')."""
+    if not path:
+        return "t:"
+    return "t:" + ".".join(str(p) for p in path)
 
 
 def make_chunk_id(index: int) -> NodeId:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from bettermem.core.edges import EdgeKind
 from bettermem.core.nodes import NodeKind, TopicNode
@@ -34,38 +34,45 @@ def get_relation_type(graph: "Graph", source: str, target: str) -> RelationType:
     if node_i is None or node_k is None:
         return RelationType.DISTANT_RELATED
 
-    # Parent: i has parent_id and it is k
-    if isinstance(node_i, TopicNode) and node_i.parent_id is not None:
-        if node_i.parent_id == target:
-            return RelationType.PARENT
+    # Parent: k in get_parents(i) or node_i.parent_ids
+    parents = graph.get_parents(source)
+    if target in parents:
+        return RelationType.PARENT
+    if isinstance(node_i, TopicNode) and target in node_i.parent_ids:
+        return RelationType.PARENT
 
     # Child: edge (i, k) with TOPIC_SUBTOPIC
     kind_ik = graph.get_edge_kind(source, target)
     if kind_ik == EdgeKind.TOPIC_SUBTOPIC:
         return RelationType.CHILD
 
-    # Semantic neighbor: topic-topic edge
-    if kind_ik == EdgeKind.TOPIC_TOPIC:
+    # Semantic neighbor: topic-topic or topic-related edge
+    if kind_ik in (EdgeKind.TOPIC_TOPIC, EdgeKind.TOPIC_RELATED):
         return RelationType.SEMANTIC_NEIGHBOR
 
-    # Sibling: both topic nodes, same parent_id
-    if isinstance(node_i, TopicNode) and isinstance(node_k, TopicNode):
-        if (
-            node_i.parent_id is not None
-            and node_k.parent_id is not None
-            and node_i.parent_id == node_k.parent_id
-            and source != target
-        ):
+    # Sibling: target in get_siblings(source) or shared parent (DAG: any parent in common)
+    siblings = graph.get_siblings(source)
+    if target in siblings:
+        return RelationType.SIBLING
+    if isinstance(node_i, TopicNode) and isinstance(node_k, TopicNode) and source != target:
+        if set(node_i.parent_ids) & set(node_k.parent_ids):
             return RelationType.SIBLING
 
     return RelationType.DISTANT_RELATED
 
 
-def r_intent(source: str, target: str, intent: TraversalIntent, graph: "Graph") -> float:
+def r_intent(
+    source: str,
+    target: str,
+    intent: TraversalIntent,
+    graph: "Graph",
+    *,
+    clarify_similarity_threshold: Optional[float] = None,
+) -> float:
     """Intent-relation score: +1 if (source, target) relation matches intent, else 0.
 
-    R_intent(i, k) in the policy score. Used to bias navigation toward
-    structure that matches user intent (e.g. deepen -> child, broaden -> parent).
+    R_intent(i, k) in the policy score. For CLARIFY, only scores 1.0 when
+    semantic neighbor edge weight >= clarify_similarity_threshold (if set).
     """
     if intent == TraversalIntent.NEUTRAL:
         return 0.0
@@ -81,6 +88,10 @@ def r_intent(source: str, target: str, intent: TraversalIntent, graph: "Graph") 
     if intent == TraversalIntent.APPLY and rel == RelationType.SEMANTIC_NEIGHBOR:
         return 1.0
     if intent == TraversalIntent.CLARIFY and rel == RelationType.SEMANTIC_NEIGHBOR:
+        if clarify_similarity_threshold is not None:
+            weight = graph.get_neighbors(source).get(target)
+            if weight is None or weight < clarify_similarity_threshold:
+                return 0.0
         return 1.0
     # APPLY could also allow distant_related for "related domain"; optional
     if intent == TraversalIntent.APPLY and rel == RelationType.DISTANT_RELATED:

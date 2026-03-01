@@ -71,4 +71,43 @@ class BetterMemConfig(BaseModel):
         default=None,
         description="Optional default path for saving/loading indices.",
     )
+    neighbor_top_k: int = Field(
+        default=20,
+        ge=1,
+        description="Max number of semantic topic-topic neighbors per node (ANN kNN).",
+    )
+    neighbor_min_cosine: float = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description="Min cosine similarity for topic-topic semantic edges.",
+    )
+    clarify_similarity_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Min similarity for clarify intent (high-similarity semantic neighbor).",
+    )
+    hierarchy_max_depth: int = Field(
+        default=3,
+        ge=1,
+        description="Max depth for recursive topic clustering.",
+    )
+    min_cluster_size: int = Field(
+        default=2,
+        ge=1,
+        description="Min cluster size before stopping recursive split.",
+    )
+    transition_policy_mix_eta: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Blend: P = eta*P_policy + (1-eta)*P_markov; 1.0 = policy only.",
+    )
+    dag_tau: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="If set, add multi-parent (DAG) edges where cos(centroid, other) >= dag_tau; None = tree only.",
+    )
 

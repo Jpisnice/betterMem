@@ -14,7 +14,7 @@ from typing import Sequence
 from bettermem.api.client import BetterMem
 from bettermem.api.config import BetterMemConfig
 from bettermem.core.nodes import ChunkNode
-from bettermem.indexing.structure_aware_chunker import StructureAwareChunker
+from bettermem.indexing.chunker import ParagraphSentenceChunker
 from bettermem.retrieval.intent import TraversalIntent
 from bettermem.topic_modeling.semantic_hierarchical import SemanticHierarchicalTopicModel
 
@@ -84,16 +84,16 @@ def main() -> None:
     base_query = "attention mechanism transformer training"
 
     config = BetterMemConfig(
-        max_steps=12,
+        max_steps=20,
         navigation_temperature=0.9,
         navigation_greedy=False,
     )
     topic_model = SemanticHierarchicalTopicModel(
-        n_coarse=5,
-        n_fine_per_coarse=3,
+        n_coarse=10,
+        n_fine_per_coarse=4,
         random_state=42,
     )
-    chunker = StructureAwareChunker(window_size=200, overlap=50)
+    chunker = ParagraphSentenceChunker(max_tokens=200)
     client = BetterMem(config=config, topic_model=topic_model)
 
     print(f"Building index over {CORPUS_PATH.name} using BetterMem...")

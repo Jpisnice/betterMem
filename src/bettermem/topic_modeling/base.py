@@ -18,23 +18,24 @@ class BaseTopicModel(ABC):
         """Fit the topic model on the given corpus."""
 
     @abstractmethod
-    def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[int, float]]:
+    def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[str, float]]:
         """Return topic distributions for each chunk.
 
         Each element in the returned sequence is a mapping from topic id
-        (int) to probability (float). Probabilities for each chunk should
-        sum approximately to 1.
+        (str, e.g. path ID "t:0.1.2") to probability (float). Probabilities
+        for each chunk should sum approximately to 1. Leaf-only distributions
+        are used for topic sequences.
         """
 
     @abstractmethod
-    def get_topic_keywords(self, topic_id: int, top_k: int = 10) -> List[str]:
+    def get_topic_keywords(self, topic_id: str, top_k: int = 10) -> List[str]:
         """Return representative keywords for a topic."""
 
     @abstractmethod
-    def get_topic_distribution_for_query(self, text: str) -> Mapping[int, float]:
+    def get_topic_distribution_for_query(self, text: str) -> Mapping[str, float]:
         """Return a topic probability distribution for a query."""
 
-    def get_centroid(self, topic_id: int) -> Optional[Sequence[float]]:
+    def get_centroid(self, topic_id: str) -> Optional[Sequence[float]]:
         """Return the embedding-space centroid for a topic, if available.
 
         Used by intent-conditioned navigation for semantic scoring.
@@ -53,7 +54,7 @@ class BaseTopicModel(ABC):
     def get_coarse_centroid(self, coarse_id: int) -> Optional[Sequence[float]]:
         """Return the embedding centroid for a coarse (parent) topic, if available.
 
-        Used when storing centroids on coarse-level topic nodes in hierarchical models.
+        Deprecated for path-based models: use get_centroid(topic_id: str) instead.
         Default returns None.
         """
         return None

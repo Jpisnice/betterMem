@@ -17,22 +17,22 @@ class KeywordToTopicMapper:
     """
 
     def __init__(self) -> None:
-        # topic_id -> Counter(term -> weight)
-        self._topic_term_weights: Dict[int, Counter[str]] = {}
+        # topic_id (node id str) -> Counter(term -> weight)
+        self._topic_term_weights: Dict[str, Counter[str]] = {}
 
-    def fit(self, topic_keywords: Mapping[int, Iterable[str]]) -> None:
-        """Register keywords for each topic."""
+    def fit(self, topic_keywords: Mapping[str, Iterable[str]]) -> None:
+        """Register keywords for each topic (key = topic/node id string)."""
         self._topic_term_weights.clear()
         for tid, terms in topic_keywords.items():
-            self._topic_term_weights[int(tid)] = Counter(str(t) for t in terms)
+            self._topic_term_weights[str(tid)] = Counter(str(t) for t in terms)
 
-    def topic_prior_from_query(self, text: str) -> Mapping[int, float]:
+    def topic_prior_from_query(self, text: str) -> Mapping[str, float]:
         """Compute an unnormalized topic prior from query terms."""
         if not self._topic_term_weights:
             return {}
 
         terms = [t.lower() for t in text.split()]
-        scores: Dict[int, float] = defaultdict(float)
+        scores: Dict[str, float] = defaultdict(float)
         for tid, counter in self._topic_term_weights.items():
             for term in terms:
                 if term in counter:

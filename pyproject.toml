@@ -20,6 +20,7 @@ bettermem = "bettermem:main"
 
 [project.optional-dependencies]
 dev = ["pytest"]
+ann = ["hnswlib>=0.7.0"]
 
 [build-system]
 requires = ["uv_build>=0.8.2,<0.9.0"]

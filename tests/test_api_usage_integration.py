@@ -11,7 +11,7 @@ from bettermem.topic_modeling.base import BaseTopicModel
 class DemoTopicModel(BaseTopicModel):
     """Lightweight semantic-hierarchical topic model for end-to-end API testing.
 
-    Two coarse topics, one subtopic each (encoded 0 and 100). Chunks alternate
+    Two coarse topics (t:0, t:1), one leaf each (t:0.0, t:1.0). Chunks alternate
     between them; query prior places mass on both for traversal.
     """
 
@@ -22,21 +22,27 @@ class DemoTopicModel(BaseTopicModel):
         _ = list(documents)
         self._fit_called = True
 
-    def get_hierarchy(self) -> Mapping[int, Sequence[int]]:
-        return {0: [0], 1: [100]}  # coarse 0 -> sub 0, coarse 1 -> sub 100
+    def get_hierarchy(self) -> Mapping[str, Sequence[str]]:
+        return {"t:0": ["t:0.0"], "t:1": ["t:1.0"]}
 
-    def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[int, float]]:
-        dists: List[Mapping[int, float]] = []
+    def get_all_topic_ids(self) -> List[str]:
+        return ["t:0", "t:1", "t:0.0", "t:1.0"]
+
+    def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[str, float]]:
+        dists: List[Mapping[str, float]] = []
         for idx, _ in enumerate(chunks):
-            encoded = 0 if idx % 2 == 0 else 100
-            dists.append({encoded: 1.0})
+            tid = "t:0.0" if idx % 2 == 0 else "t:1.0"
+            dists.append({tid: 1.0})
         return dists
 
-    def get_topic_keywords(self, topic_id: int, top_k: int = 10) -> List[str]:
+    def get_topic_keywords(self, topic_id: str, top_k: int = 10) -> List[str]:
         return [f"kw{topic_id}"] * top_k
 
-    def get_topic_distribution_for_query(self, text: str) -> Mapping[int, float]:
-        return {0: 0.6, 100: 0.4}
+    def get_topic_distribution_for_query(self, text: str) -> Mapping[str, float]:
+        return {"t:0.0": 0.6, "t:1.0": 0.4}
+
+    def get_centroid(self, topic_id: str):
+        return None
 
 
 def _load_project_readme() -> str:
@@ -56,7 +62,6 @@ def test_api_end_to_end_usage(tmp_path: Path) -> None:
 
     topic_model = DemoTopicModel()
     config = BetterMemConfig(
-        order=2,
         max_steps=16,
         navigation_temperature=0.5,
         navigation_greedy=True,

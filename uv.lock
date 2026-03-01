@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -57,12 +57,16 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+ann = [
+    { name = "hnswlib" },
+]
 dev = [
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "hnswlib", marker = "extra == 'ann'", specifier = ">=0.7.0" },
     { name = "joblib", specifier = ">=1.3.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pydantic", specifier = ">=2.0.0,<3.0.0" },
@@ -70,7 +74,7 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.0.0" },
     { name = "sentence-transformers", specifier = ">=2.0.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "ann"]
 
 [[package]]
 name = "certifi"
@@ -184,6 +188,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2b/0b/99bfd948a3ed3620ab709276df3ad3710dcea61976918cce8706502927af/hf_xet-1.3.2-cp37-abi3-win_amd64.whl", hash = "sha256:9298b47cce6037b7045ae41482e703c471ce36b52e73e49f71226d2e8e5685a1", size = 3641624, upload-time = "2026-02-27T17:26:13.542Z" },
     { url = "https://files.pythonhosted.org/packages/cc/02/9a6e4ca1f3f73a164c0cd48e41b3cc56585dcc37e809250de443d673266f/hf_xet-1.3.2-cp37-abi3-win_arm64.whl", hash = "sha256:83d8ec273136171431833a6957e8f3af496bee227a0fe47c7b8b39c106d1749a", size = 3503976, upload-time = "2026-02-27T17:26:12.123Z" },
 ]
+
+[[package]]
+name = "hnswlib"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cf/7a/1a9b1405f2eb59515f06c3074750b03e0e96edf7fee0f6dd6df81d9c21d7/hnswlib-0.8.0.tar.gz", hash = "sha256:cb6d037eedebb34a7134e7dc78966441dfd04c9cf5ee93911be911ced951c44c", size = 36206, upload-time = "2023-12-03T04:16:17.55Z" }
 
 [[package]]
 name = "httpcore"

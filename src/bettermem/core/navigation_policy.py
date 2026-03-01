@@ -34,7 +34,7 @@ def _cos_sim(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 def _get_topic_candidates(graph: "Graph", current_id: str) -> List[str]:
-    """Return topic-node candidates: outgoing topic neighbors, parent, and siblings."""
+    """Return topic-node candidates: outgoing topic neighbors, parents, children, and siblings."""
     node = graph.get_node(current_id)
     if node is None:
         return []
@@ -43,15 +43,23 @@ def _get_topic_candidates(graph: "Graph", current_id: str) -> List[str]:
         neigh = graph.get_node(neigh_id)
         if neigh is not None and neigh.kind == NodeKind.TOPIC:
             candidates_set.add(neigh_id)
-    if isinstance(node, TopicNode) and node.parent_id is not None:
-        parent = graph.get_node(node.parent_id)
-        if parent is not None and parent.kind == NodeKind.TOPIC:
-            candidates_set.add(node.parent_id)
-        for other in graph.iter_nodes():
-            if other.kind != NodeKind.TOPIC or other.id == current_id:
-                continue
-            if isinstance(other, TopicNode) and other.parent_id == node.parent_id:
-                candidates_set.add(other.id)
+    for parent_id in graph.get_parents(current_id):
+        n = graph.get_node(parent_id)
+        if n is not None and n.kind == NodeKind.TOPIC:
+            candidates_set.add(parent_id)
+    for child_id in graph.get_children(current_id):
+        n = graph.get_node(child_id)
+        if n is not None and n.kind == NodeKind.TOPIC:
+            candidates_set.add(child_id)
+    for sib_id in graph.get_siblings(current_id):
+        n = graph.get_node(sib_id)
+        if n is not None and n.kind == NodeKind.TOPIC:
+            candidates_set.add(sib_id)
+    if isinstance(node, TopicNode) and node.parent_ids:
+        for pid in node.parent_ids:
+            parent = graph.get_node(pid)
+            if parent is not None and parent.kind == NodeKind.TOPIC:
+                candidates_set.add(pid)
     return list(candidates_set)
 
 
@@ -93,6 +101,7 @@ class IntentConditionedPolicy:
         backtrack_penalty: float = 5.0,
         novelty_bonus: float = 0.3,
         prior_weight: float = 0.2,
+        clarify_similarity_threshold: Optional[float] = None,
     ) -> None:
         self._graph = graph
         self.alpha = alpha
@@ -102,6 +111,7 @@ class IntentConditionedPolicy:
         self.backtrack_penalty = backtrack_penalty
         self.novelty_bonus = novelty_bonus
         self.prior_weight = prior_weight
+        self.clarify_similarity_threshold = clarify_similarity_threshold
 
     def score_candidate(
         self,
@@ -128,7 +138,13 @@ class IntentConditionedPolicy:
         if self.beta != 0 and mu_i is not None and mu_k is not None:
             term_continuity = self.beta * _cos_sim(mu_k, mu_i)
 
-        term_intent = self.gamma * r_intent(current_id, candidate_id, intent, self._graph)
+        term_intent = self.gamma * r_intent(
+            current_id,
+            candidate_id,
+            intent,
+            self._graph,
+            clarify_similarity_threshold=self.clarify_similarity_threshold,
+        )
 
         rep = _repetition_penalty(candidate_id, state.path_history, self.delta)
         backtrack = _backtrack_penalty(candidate_id, state.path_history, self.backtrack_penalty)

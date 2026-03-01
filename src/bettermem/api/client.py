@@ -7,7 +7,7 @@ from bettermem.core.graph import Graph
 from bettermem.core.navigation_policy import IntentConditionedPolicy
 from bettermem.core.transition_model import TransitionModel
 from bettermem.core.traversal_engine import TraversalEngine
-from bettermem.indexing.chunker import FixedWindowChunker
+from bettermem.indexing.chunker import ParagraphSentenceChunker
 from bettermem.retrieval.intent import TraversalIntent, classify_intent_heuristic
 from bettermem.indexing.corpus_indexer import CorpusIndexer
 from bettermem.retrieval.context_aggregator import ContextAggregator
@@ -72,7 +72,7 @@ class BetterMem:
         corpus:
             Documents to index.
         chunker:
-            Optional chunker. If None, uses FixedWindowChunker().
+            Optional chunker. If None, uses ParagraphSentenceChunker() (paragraphs, whole sentences).
         """
         # Initialize components
         self._graph = Graph()
@@ -81,17 +81,25 @@ class BetterMem:
         )
 
         if self._topic_model is None:
-            self._topic_model = SemanticHierarchicalTopicModel()
+            self._topic_model = SemanticHierarchicalTopicModel(
+                max_depth=self.config.hierarchy_max_depth,
+                min_cluster_size=self.config.min_cluster_size,
+                dag_tau=self.config.dag_tau,
+            )
 
         if chunker is None:
-            chunker = FixedWindowChunker()
+            chunker = ParagraphSentenceChunker()
         self._indexer = CorpusIndexer(
             chunker=chunker,
             topic_model=self._topic_model,
             graph=self._graph,
             transition_model=self._transition_model,
         )
-        self._indexer.build_index(corpus)
+        self._indexer.build_index(
+            corpus,
+            neighbor_top_k=self.config.neighbor_top_k,
+            neighbor_min_cosine=self.config.neighbor_min_cosine,
+        )
 
         self._traversal_engine = TraversalEngine(
             graph=self._graph,
@@ -183,6 +191,7 @@ class BetterMem:
             backtrack_penalty=self.config.navigation_backtrack_penalty,
             novelty_bonus=self.config.navigation_novelty_bonus,
             prior_weight=self.config.navigation_prior_weight,
+            clarify_similarity_threshold=self.config.clarify_similarity_threshold,
         )
         traversal_res = self._traversal_engine.intent_conditioned_navigate(
             start_nodes=[start_node],
@@ -192,6 +201,7 @@ class BetterMem:
             policy=policy,
             temperature=self.config.navigation_temperature,
             greedy=self.config.navigation_greedy,
+            transition_policy_mix_eta=self.config.transition_policy_mix_eta,
         )
         scorer = QueryScorer()
         scorer.add_visit_counts(traversal_res.visit_counts)

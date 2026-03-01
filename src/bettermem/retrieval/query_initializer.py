@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Mapping, Tuple
 
-from bettermem.core.nodes import NodeId, make_subtopic_id
+from bettermem.core.nodes import NodeId
 
 if TYPE_CHECKING:
     from bettermem.core.navigation_policy import SemanticState
@@ -21,28 +21,22 @@ class QueryInitializer:
         self._topic_model = topic_model
         self._keyword_mapper = keyword_mapper
 
-    def _topic_id_to_node_id(self, tid: int) -> NodeId:
-        """Map encoded topic id (coarse*100+sub) to subtopic node id for semantic hierarchical graph."""
-        return make_subtopic_id(tid // 100, tid % 100)
-
     def topic_prior(self, text: str) -> Mapping[NodeId, float]:
         """Compute P0 over topic nodes given a query.
 
-        For hierarchical models, prior is over sub-topic nodes (coarse prior
-        distributed to sub-topics via the model's P(sub | coarse, query)).
+        For hierarchical models, prior is over topic nodes (path IDs);
+        topic_id is the same as node_id.
         """
         model_dist = self._topic_model.get_topic_distribution_for_query(text)
         prior: dict[NodeId, float] = {}
         for tid, p in model_dist.items():
             if p <= 0.0:
                 continue
-            node_id = self._topic_id_to_node_id(tid)
-            prior[node_id] = prior.get(node_id, 0.0) + float(p)
+            prior[tid] = prior.get(tid, 0.0) + float(p)
 
         if self._keyword_mapper is not None:
             kw_dist = self._keyword_mapper.topic_prior_from_query(text)
-            for tid, p in kw_dist.items():
-                node_id = self._topic_id_to_node_id(tid)
+            for node_id, p in kw_dist.items():
                 prior[node_id] = prior.get(node_id, 0.0) + float(p)
 
         total = sum(prior.values())
