@@ -110,4 +110,59 @@ class BetterMemConfig(BaseModel):
         le=1.0,
         description="If set, add multi-parent (DAG) edges where cos(centroid, other) >= dag_tau; None = tree only.",
     )
+    topic_chunk_top_m: int = Field(
+        default=2,
+        ge=1,
+        description="Max number of leaf topics to attach per chunk (sparse topic–chunk edges).",
+    )
+    topic_chunk_min_prob: float = Field(
+        default=0.15,
+        ge=0.0,
+        le=1.0,
+        description="Min topic probability to attach a topic–chunk edge.",
+    )
+    topic_chunk_ancestor_decay: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Decay factor for attaching chunk to ancestors of best leaf (hierarchical recall).",
+    )
+    rerank_weight_topic: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Weight for topic-projected score in chunk reranking (hybrid with cosine).",
+    )
+    rerank_weight_cosine: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Weight for query–chunk cosine similarity in chunk reranking.",
+    )
+    rerank_weight_bm25: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Weight for BM25 in chunk reranking; 0 = disable BM25.",
+    )
+
+    @classmethod
+    def debug_preset(cls) -> "BetterMemConfig":
+        """Preset for debugging intent alignment: short deterministic runs, no Markov blend.
+
+        Use with single-document demos and set diversity=False in query().
+        """
+        return cls(
+            max_steps=5,
+            navigation_greedy=True,
+            navigation_temperature=0.35,
+            navigation_gamma=1.2,
+            navigation_novelty_bonus=0.05,
+            navigation_prior_weight=0.3,
+            neighbor_top_k=6,
+            neighbor_min_cosine=0.35,
+            clarify_similarity_threshold=0.8,
+            transition_policy_mix_eta=1.0,
+            dag_tau=None,
+        )
 

@@ -10,7 +10,7 @@ from bettermem.core.traversal_engine import TraversalEngine
 from bettermem.indexing.chunker import ParagraphSentenceChunker
 from bettermem.retrieval.intent import TraversalIntent, classify_intent_heuristic
 from bettermem.indexing.corpus_indexer import CorpusIndexer
-from bettermem.retrieval.context_aggregator import ContextAggregator
+from bettermem.retrieval.context_aggregator import ContextAggregator, ContextWindow
 from bettermem.retrieval.query_initializer import QueryInitializer
 from bettermem.retrieval.scorer import QueryScorer
 from bettermem.storage.persistence import load_index, save_index
@@ -99,6 +99,9 @@ class BetterMem:
             corpus,
             neighbor_top_k=self.config.neighbor_top_k,
             neighbor_min_cosine=self.config.neighbor_min_cosine,
+            topic_chunk_top_m=self.config.topic_chunk_top_m,
+            topic_chunk_min_prob=self.config.topic_chunk_min_prob,
+            topic_chunk_ancestor_decay=self.config.topic_chunk_ancestor_decay,
         )
 
         self._traversal_engine = TraversalEngine(
@@ -140,12 +143,13 @@ class BetterMem:
 
         Returns
         -------
-        Sequence of context objects (chunk nodes).
+        Sequence of ContextWindow (each has .chunks and .score).
         """
         if self._graph is None or self._transition_model is None or self._traversal_engine is None:
             raise RuntimeError("Index has not been built or loaded.")
 
         steps = steps or self.config.max_steps
+        intent_val = intent if intent is not None else classify_intent_heuristic(text)
 
         from bettermem.core.nodes import NodeKind
 
@@ -155,9 +159,9 @@ class BetterMem:
 
         if self._topic_model is not None:
             initializer = QueryInitializer(topic_model=self._topic_model)
-            start_pair, prior_map = initializer.initial_state(text)
+            start_pair, prior_map = initializer.initial_state(text, intent=intent_val)
             prior = dict(prior_map)
-            semantic_state = initializer.semantic_state(text)
+            semantic_state = initializer.semantic_state(text, prior=prior)
             if start_pair is not None:
                 start_node = start_pair[0]
             elif prior:
@@ -181,7 +185,6 @@ class BetterMem:
         if start_node is None:
             return []
 
-        intent_val = intent if intent is not None else classify_intent_heuristic(text)
         policy = IntentConditionedPolicy(
             self._graph,
             alpha=self.config.navigation_alpha,
@@ -207,6 +210,7 @@ class BetterMem:
         scorer.add_visit_counts(traversal_res.visit_counts)
         scores = scorer.scores()
         scores = self._scores_to_chunk_space(scores)
+        scores = self._rerank_chunk_scores(text, scores)
         contexts = self._context_aggregator.select(
             scores,
             top_k=top_k,
@@ -376,6 +380,99 @@ class BetterMem:
                     ) * float(weight)
 
         return chunk_scores
+
+    def _rerank_chunk_scores(
+        self, query_text: str, chunk_scores: dict[str, float]
+    ) -> dict[str, float]:
+        """Rerank chunk scores by blending topic-projected score with query–chunk cosine (and optional BM25).
+
+        S_chunk(c) = w_topic * norm(topic_score(c)) + w_cosine * norm(cos(q, c)) [+ w_bm25 * norm(bm25)].
+        Weights from config; scores normalized to [0, 1] before blending.
+        """
+        if not chunk_scores:
+            return chunk_scores
+        wt = self.config.rerank_weight_topic
+        wc = self.config.rerank_weight_cosine
+        wb = self.config.rerank_weight_bm25
+        total_w = wt + wc + wb
+        if total_w <= 0:
+            return chunk_scores
+
+        from bettermem.core.nodes import ChunkNode
+
+        if self._graph is None or self._topic_model is None:
+            return chunk_scores
+
+        query_emb: Optional[Sequence[float]] = None
+        if wc > 0 or wb > 0:
+            if hasattr(self._topic_model, "embed_query"):
+                query_emb = self._topic_model.embed_query(query_text)
+            if query_emb is not None:
+                query_emb = list(query_emb)
+
+        # Normalize topic scores to [0, 1]
+        t_max = max(chunk_scores.values()) if chunk_scores else 0.0
+        if t_max <= 0:
+            norm_topic = {cid: 0.0 for cid in chunk_scores}
+        else:
+            norm_topic = {cid: s / t_max for cid, s in chunk_scores.items()}
+
+        # Cosine similarity query–chunk; normalize to [0, 1]
+        norm_cosine: dict[str, float] = {}
+        if wc > 0 and query_emb is not None:
+            chunk_ids = list(chunk_scores.keys())
+            embeddings: List[Optional[Sequence[float]]] = []
+            need_embed: List[Tuple[str, str]] = []
+            for cid in chunk_ids:
+                node = self._graph.get_node(cid)
+                if isinstance(node, ChunkNode) and node.embedding is not None:
+                    embeddings.append(node.embedding)
+                else:
+                    text = ""
+                    if node is not None:
+                        raw = (node.metadata or {}).get("text")
+                        text = raw if isinstance(raw, str) else ""
+                    embeddings.append(None)
+                    need_embed.append((cid, text))
+            if need_embed and hasattr(self._topic_model, "embed_texts"):
+                texts_to_embed = [t for (_, t) in need_embed]
+                emb_list = self._topic_model.embed_texts(texts_to_embed)
+                if emb_list is not None:
+                    for (cid, _), emb in zip(need_embed, emb_list):
+                        idx = chunk_ids.index(cid)
+                        embeddings[idx] = list(emb) if emb is not None else None
+            q_norm = (sum(x * x for x in query_emb)) ** 0.5
+            if q_norm <= 0:
+                q_norm = 1e-12
+            cosines: List[float] = []
+            for i, cid in enumerate(chunk_ids):
+                emb = embeddings[i] if i < len(embeddings) else None
+                if emb is None or len(emb) != len(query_emb):
+                    cosines.append(0.0)
+                    continue
+                dot = sum(a * b for a, b in zip(query_emb, emb))
+                n = (sum(x * x for x in emb)) ** 0.5
+                n = n if n > 0 else 1e-12
+                cos = dot / (q_norm * n)
+                cos = max(-1.0, min(1.0, cos))
+                cosines.append((cos + 1.0) * 0.5)
+            norm_cosine = {cid: cosines[i] for i, cid in enumerate(chunk_ids)}
+        else:
+            norm_cosine = {cid: 0.0 for cid in chunk_scores}
+
+        # Optional BM25 (stub: no-op when wb > 0 until implemented)
+        norm_bm25: dict[str, float] = {cid: 0.0 for cid in chunk_scores}
+        if wb > 0:
+            # Placeholder: could add rank_bm25 or simple term overlap
+            pass
+
+        out: dict[str, float] = {}
+        for cid in chunk_scores:
+            s = (wt / total_w) * norm_topic.get(cid, 0.0) + (wc / total_w) * norm_cosine.get(cid, 0.0)
+            if wb > 0:
+                s += (wb / total_w) * norm_bm25.get(cid, 0.0)
+            out[cid] = s
+        return out
 
     # ------------------------------------------------------------------
     # Persistence

@@ -15,6 +15,7 @@ from bettermem.api.client import BetterMem
 from bettermem.api.config import BetterMemConfig
 from bettermem.core.nodes import ChunkNode
 from bettermem.indexing.chunker import ParagraphSentenceChunker
+from bettermem.retrieval.context_aggregator import ContextWindow
 from bettermem.retrieval.intent import TraversalIntent
 from bettermem.topic_modeling.semantic_hierarchical import SemanticHierarchicalTopicModel
 
@@ -55,18 +56,29 @@ def _load_corpus() -> str:
     return CORPUS_PATH.read_text(encoding="utf-8", errors="replace")
 
 
-def _print_results(label: str, contexts: Sequence[ChunkNode], max_items: int = 3) -> None:
+def _print_results(
+    label: str,
+    contexts: Sequence[ContextWindow],
+    max_items: int = 3,
+) -> None:
     print(f"  Top results:")
     if not contexts:
         print("    (none)")
         return
-    for i, chunk in enumerate(contexts[:max_items], start=1):
-        text = str(chunk.metadata.get("text", "")) if chunk.metadata is not None else ""
-        snippet = text.strip().replace("\n", " ")
-        if len(snippet) > 120:
-            snippet = snippet[:120] + "..."
-        snippet = "".join(c if ord(c) < 128 else "?" for c in snippet)
-        print(f"    [{i}] {snippet}")
+    chunks_shown = 0
+    for w in contexts:
+        if chunks_shown >= max_items:
+            break
+        for chunk in w.chunks:
+            if chunks_shown >= max_items:
+                break
+            text = str(chunk.metadata.get("text", "")) if chunk.metadata else ""
+            snippet = text.strip().replace("\n", " ")
+            if len(snippet) > 120:
+                snippet = snippet[:120] + "..."
+            snippet = "".join(c if ord(c) < 128 else "?" for c in snippet)
+            chunks_shown += 1
+            print(f"    [{chunks_shown}] {snippet}")
 
 
 def _print_explanation(explanation: dict) -> None:
@@ -83,12 +95,7 @@ def main() -> None:
     corpus_document = _load_corpus()
     base_query = "attention mechanism transformer training"
 
-    config = BetterMemConfig(
-        max_steps=20,
-        navigation_temperature=0.9,
-        navigation_greedy=False,
-        dag_tau=0.7,
-    )
+    config = BetterMemConfig.debug_preset()
     topic_model = SemanticHierarchicalTopicModel(
         n_coarse=10,
         n_fine_per_coarse=4,
@@ -127,9 +134,9 @@ def main() -> None:
         results = client.query(
             base_query,
             intent=intent,
-            steps=10,
             top_k=5,
             path_trace=True,
+            diversity=False,
         )
         explanation = client.explain() or {}
         _print_explanation(explanation)
@@ -145,7 +152,7 @@ def main() -> None:
     client.save(str(save_dir))
     print("Reloading client from disk...")
     reloaded = BetterMem.load(str(save_dir))
-    reload_results = reloaded.query(base_query, top_k=3)
+    reload_results = reloaded.query(base_query, top_k=3, diversity=False)
     _print_results("Reloaded client (neutral)", reload_results, max_items=2)
 
 

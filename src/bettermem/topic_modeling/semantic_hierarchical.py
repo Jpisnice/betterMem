@@ -187,8 +187,43 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
             stack.extend(self._parent_ids.get(p, []))
         return anc
 
+    def _descendants_of(self, topic_id: str) -> set[str]:
+        """Transitive closure of children (subtree rooted at topic_id)."""
+        result: set[str] = {topic_id}
+        stack = list(self._hierarchy.get(topic_id, []))
+        while stack:
+            c = stack.pop()
+            if c in result:
+                continue
+            result.add(c)
+            stack.extend(self._hierarchy.get(c, []))
+        return result
+
+    def rollup_leaf_prior_to_ancestors(
+        self, leaf_prior: Mapping[str, float]
+    ) -> dict[str, float]:
+        """Roll leaf prior up to all topics: P(topic|q) = sum(leaf_prior[leaf] for leaf in descendants(topic) and leaf is leaf)."""
+        if not leaf_prior:
+            return {}
+        leaf_set = set(self._leaf_ids)
+        all_ids = self.get_all_topic_ids()
+        rolled: dict[str, float] = {}
+        for topic_id in all_ids:
+            desc = self._descendants_of(topic_id)
+            leaves_in_subtree = desc & leaf_set
+            rolled[topic_id] = sum(leaf_prior.get(leaf, 0.0) for leaf in leaves_in_subtree)
+        total = sum(rolled.values())
+        if total <= 0:
+            return rolled
+        inv = 1.0 / total
+        return {tid: p * inv for tid, p in rolled.items()}
+
     def _add_dag_edges(self) -> None:
-        """Add multi-parent edges where cos(centroid(t), centroid(u)) >= dag_tau, preserving acyclicity."""
+        """Add multi-parent edges where cos(centroid(t), centroid(u)) >= dag_tau, preserving acyclicity.
+
+        Note: When dag_tau is None (recommended until asymmetric broader/narrower tests exist),
+        similarity is kept only as TOPIC_TOPIC edges in the indexer, not in hierarchy/parent_ids.
+        """
         import numpy as np
 
         tau = self.dag_tau

@@ -53,6 +53,9 @@ class CorpusIndexer:
         *,
         neighbor_top_k: Optional[int] = None,
         neighbor_min_cosine: Optional[float] = None,
+        topic_chunk_top_m: Optional[int] = None,
+        topic_chunk_min_prob: Optional[float] = None,
+        topic_chunk_ancestor_decay: Optional[float] = None,
     ) -> None:
         """End-to-end indexing pipeline."""
         # 1. Chunk corpus
@@ -72,6 +75,9 @@ class CorpusIndexer:
             topic_dists,
             neighbor_top_k=neighbor_top_k,
             neighbor_min_cosine=neighbor_min_cosine,
+            topic_chunk_top_m=topic_chunk_top_m,
+            topic_chunk_min_prob=topic_chunk_min_prob,
+            topic_chunk_ancestor_decay=topic_chunk_ancestor_decay,
         )
 
         # 4. Build topic sequences and fit transition model
@@ -85,6 +91,9 @@ class CorpusIndexer:
         *,
         neighbor_top_k: Optional[int] = None,
         neighbor_min_cosine: Optional[float] = None,
+        topic_chunk_top_m: Optional[int] = None,
+        topic_chunk_min_prob: Optional[float] = None,
+        topic_chunk_ancestor_decay: Optional[float] = None,
     ) -> None:
         get_hierarchy = getattr(self._topic_model, "get_hierarchy", None)
         if not callable(get_hierarchy):
@@ -95,7 +104,14 @@ class CorpusIndexer:
         hierarchy_map = get_hierarchy()
         if not hierarchy_map:
             raise ValueError("Topic model get_hierarchy() returned empty; cannot build graph.")
-        self._add_nodes_and_edges_hierarchical(chunks, topic_dists, hierarchy_map)
+        self._add_nodes_and_edges_hierarchical(
+            chunks,
+            topic_dists,
+            hierarchy_map,
+            topic_chunk_top_m=topic_chunk_top_m,
+            topic_chunk_min_prob=topic_chunk_min_prob,
+            topic_chunk_ancestor_decay=topic_chunk_ancestor_decay,
+        )
         self._add_structural_chunk_edges(chunks)
         self._graph.build_topic_indexes()
         self._add_topic_topic_semantic_edges(
@@ -108,6 +124,10 @@ class CorpusIndexer:
         chunks: Sequence[Chunk],
         topic_dists: Sequence[dict[str, float]],
         hierarchy_map: dict[str, list[str]],
+        *,
+        topic_chunk_top_m: Optional[int] = None,
+        topic_chunk_min_prob: Optional[float] = None,
+        topic_chunk_ancestor_decay: Optional[float] = None,
     ) -> None:
         chunk_texts = [c.text for c in chunks]
         embeddings: Optional[Sequence[Sequence[float]]] = None
@@ -133,6 +153,15 @@ class CorpusIndexer:
             return len([p for p in parts if p.isdigit()])
 
         get_parents = getattr(self._topic_model, "get_parents", None)
+        get_leaf_topic_ids = getattr(self._topic_model, "get_leaf_topic_ids", None)
+        leaf_ids_set: set[str] = set()
+        if callable(get_leaf_topic_ids):
+            leaf_ids_set = set(get_leaf_topic_ids())
+
+        top_m = 2 if topic_chunk_top_m is None else max(1, topic_chunk_top_m)
+        min_prob = 0.15 if topic_chunk_min_prob is None else topic_chunk_min_prob
+        ancestor_decay = 0.7 if topic_chunk_ancestor_decay is None else topic_chunk_ancestor_decay
+
         sorted_topic_ids = sorted(all_topic_ids, key=depth)
         for topic_id in sorted_topic_ids:
             parent_id = child_to_parent.get(topic_id)
@@ -166,6 +195,7 @@ class CorpusIndexer:
                     weight=1.0,
                     kind=EdgeKind.TOPIC_SUBTOPIC,
                 )
+
         for chunk_idx, (chunk, dist) in enumerate(zip(chunks, topic_dists)):
             chunk_emb = None
             if embeddings is not None and chunk_idx < len(embeddings):
@@ -178,17 +208,39 @@ class CorpusIndexer:
                 metadata={"text": chunk.text},
             )
             self._graph.add_node(chunk_node)
-            for topic_id, weight in dist.items():
-                topic_node = self._graph.get_node(topic_id)
-                if topic_node is not None:
-                    self._graph.add_edge(
-                        topic_id,
-                        chunk_node.id,
-                        weight=weight,
-                        kind=EdgeKind.TOPIC_CHUNK,
-                    )
-                    if isinstance(topic_node, TopicNode):
-                        topic_node.chunk_ids.append(chunk_node.id)
+
+            # Sparse topic–chunk: top M leaf topics above threshold, then best leaf + ancestors with decay
+            leaf_dist = {tid: p for tid, p in dist.items() if tid in leaf_ids_set} if leaf_ids_set else dict(dist)
+            items = sorted(leaf_dist.items(), key=lambda kv: kv[1], reverse=True)
+            items = [(tid, p) for tid, p in items[:top_m] if p >= min_prob]
+
+            for leaf_id, weight in items:
+                topic_node = self._graph.get_node(leaf_id)
+                if topic_node is None:
+                    continue
+                self._graph.add_edge(leaf_id, chunk_node.id, weight=weight, kind=EdgeKind.TOPIC_CHUNK)
+                if isinstance(topic_node, TopicNode) and chunk_node.id not in topic_node.chunk_ids:
+                    topic_node.chunk_ids.append(chunk_node.id)
+
+                # Attach to ancestors with decayed weight (hierarchical recall)
+                if ancestor_decay <= 0:
+                    continue
+                current = leaf_id
+                anc_weight = float(weight)
+                while True:
+                    parents = get_parents(current) if callable(get_parents) else []
+                    if not parents:
+                        break
+                    anc_weight *= ancestor_decay
+                    if anc_weight < 1e-9:
+                        break
+                    for pid in parents:
+                        p_node = self._graph.get_node(pid)
+                        if p_node is not None:
+                            self._graph.add_edge(pid, chunk_node.id, weight=anc_weight, kind=EdgeKind.TOPIC_CHUNK)
+                            if isinstance(p_node, TopicNode) and chunk_node.id not in p_node.chunk_ids:
+                                p_node.chunk_ids.append(chunk_node.id)
+                    current = parents[0]
 
     def _add_structural_chunk_edges(self, chunks: Sequence[Chunk]) -> None:
         by_doc: dict[str, List[Tuple[Chunk, int]]] = {}
@@ -219,6 +271,12 @@ class CorpusIndexer:
                 self._graph.add_edge(
                     id_a,
                     id_b,
+                    weight=1.0,
+                    kind=EdgeKind.CHUNK_CHUNK_STRUCTURAL,
+                )
+                self._graph.add_edge(
+                    id_b,
+                    id_a,
                     weight=1.0,
                     kind=EdgeKind.CHUNK_CHUNK_STRUCTURAL,
                 )

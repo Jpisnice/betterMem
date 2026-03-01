@@ -132,13 +132,17 @@ def test_context_aggregator_diversity_and_top_k() -> None:
     aggregator = ContextAggregator(graph=graph)
 
     top_k = 4
-    diverse = aggregator.select(scores, top_k=top_k, diversity=True)
+    diverse = aggregator.select(
+        scores, top_k=top_k, diversity=True, use_windows=False
+    )
     assert len(diverse) <= top_k
     # With diversity, we should see chunks from both documents
-    doc_ids = {c.document_id for c in diverse}
+    doc_ids = {c.document_id for w in diverse for c in w.chunks}
     assert doc_ids == {"doc1", "doc2"}
 
-    greedy = aggregator.select(scores, top_k=top_k, diversity=False)
+    greedy = aggregator.select(
+        scores, top_k=top_k, diversity=False, use_windows=False
+    )
     assert len(greedy) == top_k
 
 

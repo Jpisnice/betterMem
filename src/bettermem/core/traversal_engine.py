@@ -100,22 +100,26 @@ class TraversalEngine:
         prev: Optional[NodeId] = None
 
         for _ in range(steps - 1):
+            step_index = len(path) - 1
             state = SemanticState(
                 query_embedding=semantic_state.query_embedding,
                 path_history=list(path),
                 prior=semantic_state.prior,
             )
-            policy_dist = policy.next_distribution(current, intent, state, temperature=temperature)
+            policy_dist = policy.next_distribution(
+                current, intent, state, temperature=temperature, step_index=step_index
+            )
             if not policy_dist:
                 break
 
-            if transition_policy_mix_eta >= 1.0 or prev is None:
+            if transition_policy_mix_eta >= 1.0 or prev is None or step_index < 2:
                 next_id = policy.step(
                     current,
                     intent,
                     state,
                     temperature=temperature,
                     greedy=greedy,
+                    step_index=step_index,
                     rng=rng,
                 )
             else:

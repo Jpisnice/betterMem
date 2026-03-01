@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence
 
 from bettermem.core.nodes import NodeKind, TopicNode, get_topic_centroid
 from bettermem.retrieval.intent import TraversalIntent
-from bettermem.retrieval.relation import r_intent
+from bettermem.retrieval.relation import get_relation_type, r_intent, RelationType
 
 if TYPE_CHECKING:
     from bettermem.core.graph import Graph
@@ -61,6 +61,62 @@ def _get_topic_candidates(graph: "Graph", current_id: str) -> List[str]:
             if parent is not None and parent.kind == NodeKind.TOPIC:
                 candidates_set.add(pid)
     return list(candidates_set)
+
+
+def _filter_candidates_by_intent(
+    graph: "Graph",
+    current_id: str,
+    candidates: List[str],
+    intent: TraversalIntent,
+    *,
+    clarify_similarity_threshold: Optional[float] = None,
+) -> List[str]:
+    """For the first 1–2 steps: keep only candidates that match the intent relation (hard filter).
+
+    deepen: children only; if none, allow ancestors that have children.
+    broaden: parents only.
+    compare: siblings only.
+    clarify: semantic neighbors with weight >= threshold only.
+    apply: semantic neighbors only.
+    neutral: no filter.
+    """
+    if intent == TraversalIntent.NEUTRAL or not candidates:
+        return list(candidates)
+
+    filtered: List[str] = []
+    for k in candidates:
+        rel = get_relation_type(graph, current_id, k)
+        if intent == TraversalIntent.DEEPEN:
+            if rel == RelationType.CHILD:
+                filtered.append(k)
+        elif intent == TraversalIntent.BROADEN:
+            if rel == RelationType.PARENT:
+                filtered.append(k)
+        elif intent == TraversalIntent.COMPARE:
+            if rel == RelationType.SIBLING:
+                filtered.append(k)
+        elif intent == TraversalIntent.CLARIFY:
+            if rel == RelationType.SEMANTIC_NEIGHBOR:
+                if clarify_similarity_threshold is not None:
+                    w = graph.get_neighbors(current_id).get(k)
+                    if w is not None and w >= clarify_similarity_threshold:
+                        filtered.append(k)
+                else:
+                    filtered.append(k)
+        elif intent == TraversalIntent.APPLY:
+            if rel == RelationType.SEMANTIC_NEIGHBOR:
+                filtered.append(k)
+
+    if intent == TraversalIntent.DEEPEN and not filtered:
+        children = graph.get_children(current_id)
+        if not children:
+            parents = graph.get_parents(current_id)
+            for pid in parents:
+                if graph.get_children(pid):
+                    filtered.append(pid)
+            if not filtered and parents:
+                filtered = list(parents)
+    return filtered
 
 
 def _repetition_penalty(node_id: str, path_history: Sequence[str], delta: float) -> float:
@@ -165,9 +221,24 @@ class IntentConditionedPolicy:
         intent: TraversalIntent,
         state: SemanticState,
         temperature: float = 1.0,
+        step_index: int = 0,
     ) -> Dict[str, float]:
-        """Return P(k) = softmax(Score(k)/T) over topic candidates."""
+        """Return P(k) = softmax(Score(k)/T) over topic candidates.
+
+        When step_index < 2, candidates are filtered to match intent (hard first hop).
+        """
         candidates = _get_topic_candidates(self._graph, current_id)
+        if not candidates:
+            return {}
+
+        if step_index < 2:
+            candidates = _filter_candidates_by_intent(
+                self._graph,
+                current_id,
+                candidates,
+                intent,
+                clarify_similarity_threshold=self.clarify_similarity_threshold,
+            )
         if not candidates:
             return {}
 
@@ -191,10 +262,13 @@ class IntentConditionedPolicy:
         *,
         temperature: float = 1.0,
         greedy: bool = False,
+        step_index: int = 0,
         rng: Optional[random.Random] = None,
     ) -> Optional[str]:
         """Choose next node: greedy argmax or sample from distribution."""
-        dist = self.next_distribution(current_id, intent, state, temperature=temperature)
+        dist = self.next_distribution(
+            current_id, intent, state, temperature=temperature, step_index=step_index
+        )
         if not dist:
             return None
         if greedy:
