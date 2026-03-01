@@ -14,6 +14,8 @@ from bettermem.core.nodes import (
     make_subtopic_id,
     make_topic_id,
 )
+
+# Semantic hierarchical traversal: topic model must provide get_hierarchy().
 from bettermem.core.transition_model import TransitionModel
 from bettermem.indexing.chunker import BaseChunker, Chunk
 from bettermem.topic_modeling.base import BaseTopicModel
@@ -71,49 +73,18 @@ class CorpusIndexer:
         chunks: Sequence[Chunk],
         topic_dists: Sequence[dict[int, float]],
     ) -> None:
-        hierarchy = getattr(self._topic_model, "get_hierarchy", None)
-        get_hierarchy = hierarchy if callable(hierarchy) else None
-        hierarchy_map = get_hierarchy() if get_hierarchy else None
-
-        if hierarchy_map is not None and len(hierarchy_map) > 0:
-            self._add_nodes_and_edges_hierarchical(chunks, topic_dists, hierarchy_map)
-        else:
-            self._add_nodes_and_edges_flat(chunks, topic_dists)
-
+        get_hierarchy = getattr(self._topic_model, "get_hierarchy", None)
+        if not callable(get_hierarchy):
+            raise ValueError(
+                "Semantic hierarchical traversal requires a topic model with get_hierarchy() "
+                "(e.g. SemanticHierarchicalTopicModel)."
+            )
+        hierarchy_map = get_hierarchy()
+        if not hierarchy_map:
+            raise ValueError("Topic model get_hierarchy() returned empty; cannot build graph.")
+        self._add_nodes_and_edges_hierarchical(chunks, topic_dists, hierarchy_map)
         self._add_structural_chunk_edges(chunks)
         self._add_topic_topic_semantic_edges()
-
-    def _add_nodes_and_edges_flat(
-        self,
-        chunks: Sequence[Chunk],
-        topic_dists: Sequence[dict[int, float]],
-    ) -> None:
-        topic_ids = set()
-        for dist in topic_dists:
-            topic_ids.update(dist.keys())
-        for tid in sorted(topic_ids):
-            node_id = make_topic_id(tid)
-            meta: dict = {}
-            if hasattr(self._topic_model, "get_centroid"):
-                cent = self._topic_model.get_centroid(tid)
-                if cent is not None:
-                    meta["centroid"] = list(cent)
-            self._graph.add_node(TopicNode(id=node_id, label=f"Topic {tid}", metadata=meta))
-        for chunk, dist in zip(chunks, topic_dists):
-            chunk_node = ChunkNode(
-                id=make_chunk_id(len(self._graph.nodes)),
-                document_id=chunk.document_id,
-                position=chunk.position,
-                metadata={"text": chunk.text},
-            )
-            self._graph.add_node(chunk_node)
-            for tid, weight in dist.items():
-                self._graph.add_edge(
-                    make_topic_id(tid),
-                    chunk_node.id,
-                    weight=weight,
-                    kind=EdgeKind.TOPIC_CHUNK,
-                )
 
     def _add_nodes_and_edges_hierarchical(
         self,
@@ -121,6 +92,13 @@ class CorpusIndexer:
         topic_dists: Sequence[dict[int, float]],
         hierarchy_map: dict[int, list[int]],
     ) -> None:
+        chunk_texts = [c.text for c in chunks]
+        embeddings: Optional[Sequence[Sequence[float]]] = None
+        if hasattr(self._topic_model, "embed_texts") and chunk_texts:
+            emb = self._topic_model.embed_texts(chunk_texts)
+            if emb is not None:
+                embeddings = emb
+
         for coarse_id, sub_ids in hierarchy_map.items():
             coarse_node_id = make_topic_id(coarse_id)
             coarse_meta: dict = {}
@@ -162,11 +140,15 @@ class CorpusIndexer:
                     weight=1.0,
                     kind=EdgeKind.TOPIC_SUBTOPIC,
                 )
-        for chunk, dist in zip(chunks, topic_dists):
+        for chunk_idx, (chunk, dist) in enumerate(zip(chunks, topic_dists)):
+            chunk_emb = None
+            if embeddings is not None and chunk_idx < len(embeddings):
+                chunk_emb = embeddings[chunk_idx]
             chunk_node = ChunkNode(
-                id=make_chunk_id(len(self._graph.nodes)),
+                id=make_chunk_id(chunk_idx),
                 document_id=chunk.document_id,
                 position=chunk.position,
+                embedding=chunk_emb,
                 metadata={"text": chunk.text},
             )
             self._graph.add_node(chunk_node)
@@ -174,13 +156,16 @@ class CorpusIndexer:
                 coarse_id = encoded_tid // 100
                 sub_idx = encoded_tid % 100
                 sub_node_id = make_subtopic_id(coarse_id, sub_idx)
-                if self._graph.get_node(sub_node_id) is not None:
+                sub_node = self._graph.get_node(sub_node_id)
+                if sub_node is not None:
                     self._graph.add_edge(
                         sub_node_id,
                         chunk_node.id,
                         weight=weight,
                         kind=EdgeKind.TOPIC_CHUNK,
                     )
+                    if isinstance(sub_node, TopicNode):
+                        sub_node.chunk_ids.append(chunk_node.id)
 
     def _add_structural_chunk_edges(self, chunks: Sequence[Chunk]) -> None:
         by_doc: dict[str, List[Tuple[Chunk, int]]] = {}
@@ -265,15 +250,10 @@ class CorpusIndexer:
         chunks: Sequence[Chunk],
         topic_dists: Sequence[dict[int, float]],
     ) -> Tuple[List[Sequence[str]], List[List[int]]]:
-        """Build sequences of topic node ids and parallel structural group per position."""
+        """Build sequences of subtopic node ids (semantic hierarchical) and structural groups."""
         by_doc: dict[str, List[Tuple[Chunk, dict[int, float]]]] = {}
         for chunk, dist in zip(chunks, topic_dists):
             by_doc.setdefault(chunk.document_id, []).append((chunk, dist))
-
-        hierarchy_map = None
-        if callable(getattr(self._topic_model, "get_hierarchy", None)):
-            hierarchy_map = self._topic_model.get_hierarchy()
-        use_subtopic_id = hierarchy_map is not None and len(hierarchy_map) > 0
 
         sequences: List[Sequence[str]] = []
         structural_groups_per_seq: List[List[int]] = []
@@ -285,10 +265,7 @@ class CorpusIndexer:
                 if not dist:
                     continue
                 top_encoded = max(dist.items(), key=lambda kv: kv[1])[0]
-                if use_subtopic_id:
-                    seq.append(make_subtopic_id(top_encoded // 100, top_encoded % 100))
-                else:
-                    seq.append(make_topic_id(top_encoded))
+                seq.append(make_subtopic_id(top_encoded // 100, top_encoded % 100))
                 g = chunk.structural_group if chunk.structural_group is not None else -1
                 groups.append(g)
             if len(seq) >= 2:

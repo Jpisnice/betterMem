@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from bettermem.core.edges import EdgeKind
 from bettermem.core.graph import Graph
@@ -19,12 +19,11 @@ from .config import BetterMemConfig
 
 
 class BetterMem:
-    """High-level interface for the BetterMem retrieval system.
+    """High-level interface for the BetterMem semantic hierarchical retriever.
 
-    This facade orchestrates indexing, traversal, and retrieval over the
-    underlying probabilistic topic transition graph. At this stage, only
-    method signatures and configuration wiring are defined; concrete
-    implementations are added in later stages of the plan.
+    Orchestrates indexing and intent-conditioned traversal over a hierarchical
+    topic graph: coarse/fine topics, second-order Markov transitions, and
+    policy-driven navigation (deepen, broaden, compare, apply, clarify, neutral).
     """
 
     def __init__(
@@ -38,12 +37,10 @@ class BetterMem:
         Parameters
         ----------
         config:
-            Optional BetterMemConfig instance. If omitted, a default
-            configuration is created.
+            Optional BetterMemConfig. If omitted, defaults are used.
         topic_model:
-            Optional pre-initialized topic model adapter. When None, the
-            appropriate backend is constructed during indexing based on
-            configuration.
+            Optional semantic hierarchical topic model (e.g. SemanticHierarchicalTopicModel).
+            When None, a default is created during build_index.
         """
         self.config: BetterMemConfig = config or BetterMemConfig()
         self._topic_model = topic_model
@@ -65,20 +62,17 @@ class BetterMem:
         *,
         chunker: Optional[Any] = None,
     ) -> None:
-        """Build an index over the given corpus.
+        """Build the semantic hierarchical index over the corpus.
 
-        This method is responsible for:
-        - Chunking documents.
-        - Fitting or loading a topic model.
-        - Constructing the topic/chunk graph.
-        - Estimating transition probabilities.
+        Chunks documents, fits the hierarchical topic model, builds the
+        topic–chunk graph, and estimates second-order transition probabilities.
 
         Parameters
         ----------
         corpus:
             Documents to index.
         chunker:
-            Optional chunker instance. If None, uses FixedWindowChunker().
+            Optional chunker. If None, uses FixedWindowChunker().
         """
         # Initialize components
         self._graph = Graph()
@@ -118,27 +112,27 @@ class BetterMem:
         path_trace: bool = False,
         intent: Optional[TraversalIntent] = None,
     ) -> Sequence[Any]:
-        """Run a retrieval query using intent-conditioned navigation.
+        """Run a retrieval query with intent-conditioned traversal over the topic graph.
 
         Parameters
         ----------
         text:
             Natural language query.
         steps:
-            Optional override for the number of traversal steps.
+            Override for traversal steps; default from config.
         top_k:
-            Number of chunks or contexts to return.
+            Number of chunk contexts to return.
         diversity:
-            Whether to apply diversity-aware selection to the final contexts.
+            Apply diversity-aware selection to final contexts.
         path_trace:
-            If True, explanation will include the traversal path.
+            If True, explain() will include the traversal path.
         intent:
-            Optional override for traversal intent; default is heuristic from query text.
+            Override traversal intent (deepen/broaden/compare/apply/clarify/neutral);
+            default is inferred from query text.
 
         Returns
         -------
-        Sequence[Any]
-            A sequence of context objects.
+        Sequence of context objects (chunk nodes).
         """
         if self._graph is None or self._transition_model is None or self._traversal_engine is None:
             raise RuntimeError("Index has not been built or loaded.")
@@ -222,18 +216,9 @@ class BetterMem:
     def explain(self, *, include_embeddings: bool = True) -> Any:
         """Return a structured explanation of the last query.
 
-        When path_trace was True for the query, the explanation includes:
-        - strategy: traversal strategy used (e.g. "intent_conditioned").
-        - intent: inferred or overridden intent (e.g. "neutral", "deepen").
-        - prior: topic prior over nodes.
-        - path: list of topic node ids visited.
-        - path_steps: for each step, topic node details and associated chunks
-          (chunk_id, text_snippet, document_id, position, topic_weight,
-          and optionally embedding when include_embeddings and model supports it).
-        - chunks_along_path: flattened list of chunks for all nodes traveled
-          (deduplicated by chunk_id), with optional embedding references.
-
-        If include_embeddings is False, embedding fields are omitted from the copy.
+        When path_trace was True, includes: intent, topic prior, path (topic node ids),
+        path_steps (topic labels/keywords/level and chunks per step), and
+        chunks_along_path. Set include_embeddings=False to omit embedding fields.
         """
         if self._last_explanation is None:
             return None
@@ -260,7 +245,7 @@ class BetterMem:
         *,
         include_embeddings: bool = True,
     ) -> Dict[str, Any]:
-        """Build a structured explanation with path steps and chunk embeddings."""
+        """Build a structured explanation using stored chunk and embedding references."""
         from bettermem.core.nodes import ChunkNode, NodeKind, TopicNode
 
         explanation: Dict[str, Any] = {
@@ -278,8 +263,7 @@ class BetterMem:
             return explanation
 
         path_steps: List[Dict[str, Any]] = []
-        chunk_texts_for_embed: List[str] = []
-        chunk_embed_indices: List[tuple[int, int]] = []  # (step_idx, chunk_idx_in_step)
+        chunk_ids_needing_embed: List[tuple[int, int, str]] = []  # (step_idx, chunk_idx, text)
 
         for step_idx, node_id in enumerate(path_node_ids):
             node = self._graph.get_node(node_id)
@@ -298,9 +282,18 @@ class BetterMem:
             }
 
             neighbors = self._graph.get_neighbors(node_id)
-            for neigh_id, weight in neighbors.items():
-                if self._graph.get_edge_kind(node_id, neigh_id) != EdgeKind.TOPIC_CHUNK:
-                    continue
+            chunk_id_weight_pairs: List[Tuple[str, float]] = []
+            if topic and topic.chunk_ids:
+                weight_by_neigh = dict(neighbors)
+                for cid in topic.chunk_ids:
+                    chunk_id_weight_pairs.append((cid, weight_by_neigh.get(cid, 1.0)))
+            else:
+                for neigh_id, weight in neighbors.items():
+                    if self._graph.get_edge_kind(node_id, neigh_id) != EdgeKind.TOPIC_CHUNK:
+                        continue
+                    chunk_id_weight_pairs.append((neigh_id, float(weight)))
+
+            for neigh_id, weight in chunk_id_weight_pairs:
                 neigh = self._graph.get_node(neigh_id)
                 if neigh is None or neigh.kind != NodeKind.CHUNK:
                     continue
@@ -314,20 +307,22 @@ class BetterMem:
                     "position": getattr(chunk, "position", None) if chunk else None,
                     "topic_weight": float(weight),
                 }
+                if include_embeddings and chunk is not None and getattr(chunk, "embedding", None) is not None:
+                    chunk_entry["embedding"] = list(chunk.embedding)
+                elif include_embeddings and text and self._topic_model is not None:
+                    chunk_ids_needing_embed.append((step_idx, len(step_info["chunks"]), text))
                 step_info["chunks"].append(chunk_entry)
-                if include_embeddings and text:
-                    chunk_texts_for_embed.append(text)
-                    chunk_embed_indices.append((step_idx, len(step_info["chunks"]) - 1))
 
             path_steps.append(step_info)
 
-        explanation["path_steps"] = path_steps
-
-        if chunk_texts_for_embed and self._topic_model is not None and hasattr(self._topic_model, "embed_texts"):
-            embeddings = self._topic_model.embed_texts(chunk_texts_for_embed)
-            if embeddings is not None and len(embeddings) == len(chunk_embed_indices):
-                for (step_idx, chunk_idx), emb in zip(chunk_embed_indices, embeddings):
+        if chunk_ids_needing_embed and self._topic_model is not None and hasattr(self._topic_model, "embed_texts"):
+            texts_to_embed = [t for (_, _, t) in chunk_ids_needing_embed]
+            embeddings = self._topic_model.embed_texts(texts_to_embed)
+            if embeddings is not None and len(embeddings) == len(chunk_ids_needing_embed):
+                for (step_idx, chunk_idx, _), emb in zip(chunk_ids_needing_embed, embeddings):
                     path_steps[step_idx]["chunks"][chunk_idx]["embedding"] = list(emb)
+
+        explanation["path_steps"] = path_steps
 
         seen_chunk_ids: set = set()
         all_chunk_entries = []
@@ -341,12 +336,10 @@ class BetterMem:
         return explanation
 
     def _scores_to_chunk_space(self, scores: dict[str, float]) -> dict[str, float]:
-        """Project node-level scores into chunk space using the graph structure.
+        """Project topic-node visit scores into chunk space via topic→chunk edges.
 
-        Beam search and random walk operate over topic nodes; this helper
-        converts their visit counts into scores over chunk nodes by
-        distributing mass along topic→chunk edges. If scores already
-        contain chunk nodes, those are preserved.
+        Intent-conditioned traversal visits topic nodes; this distributes
+        their scores to chunk nodes using TOPIC_CHUNK edge weights.
         """
         if self._graph is None:
             return {}
@@ -389,9 +382,17 @@ class BetterMem:
         )
 
     @classmethod
-    def load(cls, path: str) -> "BetterMem":
-        """Load an index and configuration from disk and return a client."""
-        graph, transition_model, config = load_index(path)
+    def load(cls, path: str, *, mmap_mode: Optional[str] = None) -> "BetterMem":
+        """Load a saved semantic hierarchical index and return a BetterMem instance.
+
+        Parameters
+        ----------
+        path
+            Directory containing graph.joblib, transition.joblib, and optional config.json.
+        mmap_mode
+            Optional joblib mmap mode (e.g. 'r') for large arrays.
+        """
+        graph, transition_model, config = load_index(path, mmap_mode=mmap_mode)
         instance = cls(config=config)
         instance._graph = graph
         instance._transition_model = transition_model

@@ -1,41 +1,27 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
 
 class BetterMemConfig(BaseModel):
-    """Configuration for the BetterMem probabilistic topic transition graph retriever."""
+    """Configuration for the BetterMem semantic hierarchical retriever.
 
-    order: Literal[1, 2] = Field(
-        default=2,
-        description="Markov order for transitions. 2 enables second-order topic transitions.",
-    )
+    All settings apply to the intent-conditioned traversal over the
+    hierarchical topic graph (second-order Markov transitions, policy scoring).
+    """
+
     smoothing_lambda: float = Field(
         default=0.7,
         ge=0.0,
         le=1.0,
         description="Interpolation weight between second-order and first-order transitions.",
     )
-    beam_width: int = Field(
-        default=10,
-        ge=1,
-        description="Beam width for beam-search-based traversal.",
-    )
     max_steps: int = Field(
         default=32,
         ge=1,
-        description="Maximum number of traversal steps for random walks / PageRank iterations.",
-    )
-    transition_prune_threshold: float = Field(
-        default=1e-6,
-        ge=0.0,
-        description="Drop transitions with probability below this threshold during pruning.",
-    )
-    traversal_strategy: Literal["beam", "random_walk", "personalized_pagerank"] = Field(
-        default="personalized_pagerank",
-        description="Deprecated; intent-conditioned navigation is used. Kept for backward compatibility.",
+        description="Maximum number of steps for intent-conditioned traversal.",
     )
     navigation_alpha: float = Field(
         default=0.5,
@@ -81,18 +67,6 @@ class BetterMemConfig(BaseModel):
         default=False,
         description="If True, always take argmax next step; else sample from policy.",
     )
-    entropy_penalty: float = Field(
-        default=0.0,
-        ge=0.0,
-        description="Weight of entropy-based regularization in scoring.",
-    )
-    exploration_factor: float = Field(
-        default=0.1,
-        ge=0.0,
-        le=1.0,
-        description="Controls stochastic exploration in next-step sampling.",
-    )
-    # Optional reserved fields for future extensions
     index_storage_path: Optional[str] = Field(
         default=None,
         description="Optional default path for saving/loading indices.",

@@ -16,14 +16,9 @@ from pydantic import ValidationError
 
 def test_config_defaults() -> None:
     cfg = BetterMemConfig()
-    # Basic sanity on defaults
-    assert cfg.order in (1, 2)
     assert 0.0 <= cfg.smoothing_lambda <= 1.0
-    assert cfg.traversal_strategy in {
-        "beam",
-        "random_walk",
-        "personalized_pagerank",
-    }
+    assert cfg.max_steps >= 1
+    assert cfg.navigation_alpha >= 0
 
 
 def test_config_validation_bounds() -> None:

@@ -133,9 +133,12 @@ class Graph:
                 base["keywords"] = node.keywords
                 base["level"] = node.level
                 base["parent_id"] = node.parent_id
+                base["chunk_ids"] = list(node.chunk_ids)
             elif isinstance(node, ChunkNode):
                 base["document_id"] = node.document_id
                 base["position"] = node.position
+                if node.embedding is not None:
+                    base["embedding"] = list(node.embedding)
             elif isinstance(node, KeywordNode):
                 base["term"] = node.term
             nodes_payload.append(base)
@@ -170,19 +173,25 @@ class Graph:
 
             kind = NodeKind(kind_str)
             if kind == NodeKind.TOPIC:
+                chunk_ids_raw = n.get("chunk_ids") or []
+                chunk_ids = list(chunk_ids_raw) if isinstance(chunk_ids_raw, list) else []
                 node = TopicNode(
                     id=nid,
                     label=n.get("label"),  # type: ignore[arg-type]
                     keywords=n.get("keywords"),  # type: ignore[arg-type]
                     level=int(n.get("level", 0) or 0),  # type: ignore[arg-type]
                     parent_id=n.get("parent_id"),  # type: ignore[arg-type]
+                    chunk_ids=chunk_ids,
                     metadata=metadata,
                 )
             elif kind == NodeKind.CHUNK:
+                emb_raw = n.get("embedding")
+                embedding = list(emb_raw) if isinstance(emb_raw, (list, tuple)) else None
                 node = ChunkNode(
                     id=nid,
                     document_id=n.get("document_id"),  # type: ignore[arg-type]
                     position=n.get("position"),  # type: ignore[arg-type]
+                    embedding=embedding,
                     metadata=metadata,
                 )
             elif kind == NodeKind.KEYWORD:

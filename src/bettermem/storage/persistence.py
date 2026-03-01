@@ -2,11 +2,29 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
+
+import joblib
+import numpy as np
 
 from bettermem.api.config import BetterMemConfig
 from bettermem.core.graph import Graph
 from bettermem.core.transition_model import TransitionModel
+
+# Filenames for joblib persistence
+GRAPH_JOBLIB = "graph.joblib"
+TRANSITION_JOBLIB = "transition.joblib"
+CONFIG_JSON = "config.json"
+
+
+def _graph_payload_for_joblib(graph: Graph) -> dict[str, Any]:
+    """Build graph payload and convert embedding lists to numpy for efficient joblib storage."""
+    payload = graph.to_dict()
+    for node in payload.get("nodes", []) or []:
+        emb = node.get("embedding")
+        if emb is not None and isinstance(emb, (list, tuple)):
+            node["embedding"] = np.asarray(emb, dtype=np.float64)
+    return payload
 
 
 def save_index(
@@ -19,39 +37,56 @@ def save_index(
     """Persist graph, transition model, and optional config to a directory.
 
     The directory will contain:
-      - graph.json
-      - transition.json
-      - config.json (optional)
+      - graph.joblib
+      - transition.joblib
+      - config.json (optional, for human-readable config)
     """
     os.makedirs(path, exist_ok=True)
 
-    graph_path = os.path.join(path, "graph.json")
-    tm_path = os.path.join(path, "transition.json")
-    cfg_path = os.path.join(path, "config.json")
+    graph_path = os.path.join(path, GRAPH_JOBLIB)
+    tm_path = os.path.join(path, TRANSITION_JOBLIB)
+    cfg_path = os.path.join(path, CONFIG_JSON)
 
-    with open(graph_path, "w", encoding="utf-8") as f:
-        json.dump(graph.to_dict(), f)
+    graph_payload = _graph_payload_for_joblib(graph)
+    joblib.dump(graph_payload, graph_path, compress=("gzip", 3))
 
-    with open(tm_path, "w", encoding="utf-8") as f:
-        json.dump(transition_model.to_dict(), f)
+    joblib.dump(transition_model.to_dict(), tm_path, compress=("gzip", 3))
 
     if config is not None:
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(config.model_dump(), f)
 
 
-def load_index(path: str) -> Tuple[Graph, TransitionModel, Optional[BetterMemConfig]]:
-    """Load graph, transition model, and optional config from a directory."""
-    graph_path = os.path.join(path, "graph.json")
-    tm_path = os.path.join(path, "transition.json")
-    cfg_path = os.path.join(path, "config.json")
+def load_index(
+    path: str,
+    *,
+    mmap_mode: Optional[str] = None,
+) -> Tuple[Graph, TransitionModel, Optional[BetterMemConfig]]:
+    """Load graph, transition model, and optional config from a directory.
 
-    with open(graph_path, "r", encoding="utf-8") as f:
-        graph_payload = json.load(f)
+    Expects graph.joblib and transition.joblib (joblib format only).
+
+    Parameters
+    ----------
+    path
+        Directory containing the index files.
+    mmap_mode
+        If set (e.g. 'r'), passed to joblib.load for memory-mapped loading
+        of large arrays.
+    """
+    graph_path = os.path.join(path, GRAPH_JOBLIB)
+    tm_path = os.path.join(path, TRANSITION_JOBLIB)
+    cfg_path = os.path.join(path, CONFIG_JSON)
+
+    if not os.path.exists(graph_path):
+        raise FileNotFoundError(f"{GRAPH_JOBLIB} not found in {path!r}")
+    kwargs = {} if mmap_mode is None else {"mmap_mode": mmap_mode}
+    graph_payload = joblib.load(graph_path, **kwargs)
     graph = Graph.from_dict(graph_payload)
 
-    with open(tm_path, "r", encoding="utf-8") as f:
-        tm_payload = json.load(f)
+    if not os.path.exists(tm_path):
+        raise FileNotFoundError(f"{TRANSITION_JOBLIB} not found in {path!r}")
+    tm_payload = joblib.load(tm_path, **kwargs)
     transition_model = TransitionModel.from_dict(tm_payload)
 
     config: Optional[BetterMemConfig] = None
@@ -61,4 +96,3 @@ def load_index(path: str) -> Tuple[Graph, TransitionModel, Optional[BetterMemCon
         config = BetterMemConfig(**cfg_payload)
 
     return graph, transition_model, config
-

@@ -8,34 +8,27 @@ Modules
 -------
 
 - `config.py`:
-  - Defines `BetterMemConfig` (Pydantic model) with knobs such as:
-    - `order` (1 or 2), `smoothing_lambda`, `beam_width`,
-      `max_steps`, `transition_prune_threshold`.
-    - `traversal_strategy` (e.g. beam, random walk, personalized PageRank).
-    - `entropy_penalty`, `exploration_factor`.
-    - Navigation and traversal knobs (no separate topic backend; semantic hierarchical model is used by default).
-  - This captures the high-level behaviour of the system in a validated,
-    serializable form.
+  - Defines `BetterMemConfig` (Pydantic) for the **semantic hierarchical** retriever only:
+    - `smoothing_lambda`, `max_steps` (transition and traversal).
+    - Navigation policy: `navigation_alpha`, `navigation_beta`, `navigation_gamma`,
+      `navigation_delta`, `navigation_backtrack_penalty`, `navigation_novelty_bonus`,
+      `navigation_prior_weight`, `navigation_temperature`, `navigation_greedy`.
+    - Optional `index_storage_path`.
+  - Single design: intent-conditioned traversal over the hierarchical topic graph.
 - `client.py`:
-  - Implements the `BetterMem` facade class:
-    - `build_index(corpus)`: runs the indexing pipeline
-      (`Chunker`, `CorpusIndexer`, topic modeling) to construct the graph
-      and transition model.
-    - `query(text, ...)`: executes the query pipeline:
-      `QueryInitializer` → `TraversalEngine` → `QueryScorer` →
-      `ContextAggregator`, returning ranked chunks.
-    - `explain()`: returns a structured explanation of the last query,
-      including priors, chosen strategy, and traversal artifacts.
-    - `save(path)` / `load(path)`: persist and reload indices via
-      `bettermem.storage.persistence`.
+  - `BetterMem` facade:
+    - `build_index(corpus, chunker=...)`: build hierarchical topic graph and second-order transitions.
+    - `query(text, steps=..., top_k=..., diversity=..., path_trace=..., intent=...)`: intent-conditioned retrieval.
+    - `explain(include_embeddings=...)`: structured explanation of last query (path, prior, intent).
+    - `save(path)` / `load(path)`: persist and reload via `bettermem.storage.persistence`.
 
 How it fits into the system
 ---------------------------
 
-- This is the primary entry point for external callers:
+- Primary entry point for external callers:
   - Import `BetterMem` and `BetterMemConfig`.
-  - Configure traversal and topic modeling backends.
-  - Build indices, run queries, and retrieve explanations.
+  - Configure semantic hierarchical traversal (navigation knobs, max_steps).
+  - Build indices, run queries, retrieve explanations.
 - Internally, the API layer composes all other subpackages:
   `core`, `topic_modeling`, `indexing`, `learning`, `retrieval`,
   and `storage`.

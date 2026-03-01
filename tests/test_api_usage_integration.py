@@ -9,12 +9,10 @@ from bettermem.topic_modeling.base import BaseTopicModel
 
 
 class DemoTopicModel(BaseTopicModel):
-    """Lightweight topic model used for end-to-end API testing.
+    """Lightweight semantic-hierarchical topic model for end-to-end API testing.
 
-    It creates two topics and assigns chunks alternately to topic 0 and 1,
-    while the query distribution always places non-zero mass on both topics.
-    This ensures all traversal strategies have a sensible prior/state to work with
-    without requiring heavy external dependencies.
+    Two coarse topics, one subtopic each (encoded 0 and 100). Chunks alternate
+    between them; query prior places mass on both for traversal.
     """
 
     def __init__(self) -> None:
@@ -24,20 +22,21 @@ class DemoTopicModel(BaseTopicModel):
         _ = list(documents)
         self._fit_called = True
 
+    def get_hierarchy(self) -> Mapping[int, Sequence[int]]:
+        return {0: [0], 1: [100]}  # coarse 0 -> sub 0, coarse 1 -> sub 100
+
     def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[int, float]]:
         dists: List[Mapping[int, float]] = []
         for idx, _ in enumerate(chunks):
-            topic_id = idx % 2
-            dists.append({topic_id: 1.0})
+            encoded = 0 if idx % 2 == 0 else 100
+            dists.append({encoded: 1.0})
         return dists
 
     def get_topic_keywords(self, topic_id: int, top_k: int = 10) -> List[str]:
         return [f"kw{topic_id}"] * top_k
 
     def get_topic_distribution_for_query(self, text: str) -> Mapping[int, float]:
-        # Simple fixed two-topic prior used for initialization
-        # Topic 0 gets slightly higher mass than topic 1.
-        return {0: 0.6, 1: 0.4}
+        return {0: 0.6, 100: 0.4}
 
 
 def _load_project_readme() -> str:

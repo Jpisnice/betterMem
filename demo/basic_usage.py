@@ -81,10 +81,9 @@ def _print_explanation(explanation: dict) -> None:
 
 def main() -> None:
     corpus_document = _load_corpus()
-    base_query = "attention mechanism transformer"
+    base_query = "attention mechanism transformer training"
 
     config = BetterMemConfig(
-        order=2,
         max_steps=12,
         navigation_temperature=0.9,
         navigation_greedy=False,

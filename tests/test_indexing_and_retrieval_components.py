@@ -15,27 +15,27 @@ from bettermem.topic_modeling.base import BaseTopicModel
 
 
 class DummyTopicModel(BaseTopicModel):
-    """Minimal topic model for testing indexing and query initialization."""
+    """Minimal semantic-hierarchical topic model for testing."""
 
     def __init__(self) -> None:
         self._fit_called = False
 
     def fit(self, documents: Iterable[str]) -> None:
-        # Just record that we were called; no heavy training
         _ = list(documents)
         self._fit_called = True
 
+    def get_hierarchy(self) -> Mapping[int, List[int]]:
+        # One coarse topic with one subtopic (encoded 0 = 0*100+0)
+        return {0: [0]}
+
     def transform(self, chunks: Iterable[str]) -> Sequence[Mapping[int, float]]:
-        # Assign a single topic 0 with probability 1.0 to each chunk
-        return [{"0": 1.0} if False else {0: 1.0} for _ in chunks]
+        return [{0: 1.0} for _ in chunks]
 
     def get_topic_keywords(self, topic_id: int, top_k: int = 10) -> List[str]:
         return [f"kw{topic_id}"]
 
     def get_topic_distribution_for_query(self, text: str) -> Mapping[int, float]:
-        # Two-topic toy distribution depending on query length
-        base = {0: 0.6, 1: 0.4} if len(text.split()) > 1 else {0: 1.0}
-        # Ensure exact normalization
+        base = {0: 0.6, 100: 0.4} if len(text.split()) > 1 else {0: 1.0}
         return additive_smoothing({k: int(v * 10) for k, v in base.items()}, alpha=0.0)
 
 

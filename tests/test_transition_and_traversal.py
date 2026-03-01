@@ -45,36 +45,44 @@ def test_transition_model_to_from_dict_roundtrip() -> None:
     assert original == cloned
 
 
-def test_traversal_engine_random_walk_and_pagerank() -> None:
-    # Build a tiny chain graph n1 -> n2 -> n3
+def test_traversal_engine_intent_conditioned() -> None:
+    from bettermem.core.nodes import TopicNode
+    from bettermem.core.navigation_policy import SemanticState
+    from bettermem.retrieval.intent import TraversalIntent
+
     graph = Graph()
-    for nid in ("n1", "n2", "n3"):
-        graph.add_node(Node(id=nid, kind=NodeKind.TOPIC))
-    graph.add_edge("n1", "n2", weight=1.0)
-    graph.add_edge("n2", "n3", weight=1.0)
+    for nid in ("t:0:0", "t:0:1", "t:1:0"):
+        graph.add_node(
+            TopicNode(
+                id=nid,
+                label=nid,
+                level=1,
+                parent_id="t:0" if nid.startswith("t:0") else "t:1",
+                metadata={"centroid": [1.0, 0.0] if nid == "t:0:0" else [0.9, 0.1]},
+            )
+        )
+    graph.add_edge("t:0:0", "t:0:1", weight=1.0)
+    graph.add_edge("t:0:0", "t:1:0", weight=0.5)
+    graph.add_edge("t:0:1", "t:1:0", weight=0.5)
 
     tm = TransitionModel()
-    tm.fit([["n1", "n2", "n3"]])
+    tm.fit([["t:0:0", "t:0:1", "t:1:0"]])
     engine = TraversalEngine(graph=graph, transition_model=tm)
 
-    # Random walk should at least visit all nodes in the simple chain
-    result = engine.random_walk(["n1", "n2"], steps=5, exploration_factor=0.0)
-    assert set(result.visit_counts.keys()) >= {"n1", "n2", "n3"}
-
-    # Personalized PageRank should produce scores for all nodes with non-zero prior
-    prior = {"n1": 0.5, "n2": 0.5}
-    scores = engine.personalized_pagerank(prior, max_iters=20)
-    assert set(scores.keys()) == {"n1", "n2", "n3"}
-    assert all(v >= 0.0 for v in scores.values())
-    assert not math.isclose(sum(scores.values()), 0.0)
-
-
-def test_traversal_engine_invalid_alpha_raises() -> None:
-    graph = Graph()
-    graph.add_node(Node(id="n1", kind=NodeKind.TOPIC))
-    tm = TransitionModel()
-    engine = TraversalEngine(graph=graph, transition_model=tm)
-
-    with pytest.raises(ValueError):
-        engine.personalized_pagerank({"n1": 1.0}, alpha=0.0)
+    state = SemanticState(
+        query_embedding=[1.0, 0.0],
+        path_history=[],
+        prior={"t:0:0": 0.7, "t:0:1": 0.2, "t:1:0": 0.1},
+    )
+    result = engine.intent_conditioned_navigate(
+        start_nodes=["t:0:0"],
+        steps=3,
+        intent=TraversalIntent.NEUTRAL,
+        semantic_state=state,
+        greedy=True,
+    )
+    assert len(result.paths) == 1
+    assert len(result.paths[0]) >= 1
+    assert result.paths[0][0] == "t:0:0"
+    assert set(result.visit_counts.keys()) >= {"t:0:0"}
 

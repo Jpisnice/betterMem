@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Mapping, Tuple
 
-from bettermem.core.nodes import NodeId, make_subtopic_id, make_topic_id
+from bettermem.core.nodes import NodeId, make_subtopic_id
 
 if TYPE_CHECKING:
     from bettermem.core.navigation_policy import SemanticState
@@ -22,12 +22,8 @@ class QueryInitializer:
         self._keyword_mapper = keyword_mapper
 
     def _topic_id_to_node_id(self, tid: int) -> NodeId:
-        """Map numeric topic id to graph node id (flat or hierarchical)."""
-        if callable(getattr(self._topic_model, "get_hierarchy", None)):
-            hierarchy = self._topic_model.get_hierarchy()
-            if hierarchy:
-                return make_subtopic_id(tid // 100, tid % 100)
-        return make_topic_id(tid)
+        """Map encoded topic id (coarse*100+sub) to subtopic node id for semantic hierarchical graph."""
+        return make_subtopic_id(tid // 100, tid % 100)
 
     def topic_prior(self, text: str) -> Mapping[NodeId, float]:
         """Compute P0 over topic nodes given a query.

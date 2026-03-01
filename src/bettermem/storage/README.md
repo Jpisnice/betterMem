@@ -14,13 +14,15 @@ Modules
   - Provides `to_dict` / `from_dict` helpers for JSON-friendly encoding.
 - `persistence.py`:
   - `save_index(path, graph, transition_model, config=None)` writes:
-    - `graph.json`: serialized `Graph` with nodes and edges.
-    - `transition.json`: serialized `TransitionModel` counts/probabilities.
-    - `config.json`: `BetterMemConfig` settings (optional).
-  - `load_index(path)` reconstructs:
+    - `graph.joblib`: serialized `Graph` (joblib, with embeddings as numpy for efficiency).
+    - `transition.joblib`: serialized `TransitionModel` (joblib).
+    - `config.json`: `BetterMemConfig` settings (optional, for human-readable config).
+  - `load_index(path, mmap_mode=None)` loads from `graph.joblib` and `transition.joblib`
+    only (joblib format). Optional `mmap_mode` (e.g. `'r'`) is passed to `joblib.load`
+    for memory-mapped loading of large indices.
     - `Graph` via `Graph.from_dict`.
     - `TransitionModel` via `TransitionModel.from_dict`.
-    - Optional `BetterMemConfig`.
+    - Optional `BetterMemConfig` from `config.json` if present.
 
 How it fits into the system
 ---------------------------

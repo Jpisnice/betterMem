@@ -7,7 +7,12 @@ from bettermem.api.config import BetterMemConfig
 from bettermem.core.graph import Graph
 from bettermem.core.nodes import Node, NodeKind
 from bettermem.core.transition_model import TransitionModel
-from bettermem.storage.persistence import load_index, save_index
+from bettermem.storage.persistence import (
+    GRAPH_JOBLIB,
+    TRANSITION_JOBLIB,
+    load_index,
+    save_index,
+)
 
 
 def _build_sample_graph_and_model() -> tuple[Graph, TransitionModel]:
@@ -28,8 +33,8 @@ def test_save_and_load_index_roundtrip(tmp_path: Path) -> None:
     save_dir = tmp_path / "index"
     save_index(str(save_dir), graph=graph, transition_model=tm, config=cfg)
 
-    assert (save_dir / "graph.json").exists()
-    assert (save_dir / "transition.json").exists()
+    assert (save_dir / GRAPH_JOBLIB).exists()
+    assert (save_dir / TRANSITION_JOBLIB).exists()
     assert (save_dir / "config.json").exists()
 
     loaded_graph, loaded_tm, loaded_cfg = load_index(str(save_dir))
@@ -47,7 +52,7 @@ def test_save_and_load_index_roundtrip(tmp_path: Path) -> None:
 
 def test_bettermem_save_and_load_client(tmp_path: Path) -> None:
     graph, tm = _build_sample_graph_and_model()
-    cfg = BetterMemConfig(order=2)
+    cfg = BetterMemConfig(max_steps=16)
 
     client = BetterMem(config=cfg)
     # Wire in the prebuilt components
@@ -59,7 +64,7 @@ def test_bettermem_save_and_load_client(tmp_path: Path) -> None:
 
     loaded = BetterMem.load(str(save_dir))
     assert isinstance(loaded, BetterMem)
-    assert loaded.config.order == cfg.order
+    assert loaded.config.max_steps == cfg.max_steps
     assert loaded._graph is not None  # type: ignore[attr-defined]
     assert loaded._transition_model is not None  # type: ignore[attr-defined]
 

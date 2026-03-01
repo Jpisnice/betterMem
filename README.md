@@ -190,7 +190,7 @@ flowchart TD
   scorer --> explainOut
 
   subgraph storageLayer [Persistence]
-    saveOp["Save: graph.json + transition.json + config.json"]
+    saveOp["Save: graph.joblib + transition.joblib + config.json"]
     loadOp["Load: reconstruct Graph + TransitionModel"]
   end
 
@@ -199,6 +199,9 @@ flowchart TD
   loadOp -->|"deserialize"| adj
   loadOp -->|"deserialize"| blend
 ```
+
+Index directories use joblib for the graph and transition model
+(`graph.joblib`, `transition.joblib`). Optional `config.json` holds human-readable config.
 
 Testing
 -------
