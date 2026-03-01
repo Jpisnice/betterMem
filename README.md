@@ -32,22 +32,45 @@ uv run python demo/basic_usage.py
 Intent-conditioned navigation
 ------------------------------
 
-When you run a query, BetterMem navigates the topic graph using a **single policy** conditioned on your query and inferred **intent** (e.g. "explain more" → deepen, "big picture" → broaden, "compare" → siblings). This mirrors how humans browse textbooks: choose a topic, then decide whether to go deeper, broaden, compare alternatives, or clarify.
+When you run a query, BetterMem navigates the topic graph using a **single policy** conditioned on your query and inferred **intent**. The policy scores each candidate next topic and chooses by softmax (greedy or sampled). This mirrors textbook browsing: choose a topic, then go deeper, broaden, compare alternatives, or clarify.
 
-| Strategy | Best for | Behavior |
-|----------|----------|----------|
-| **beam** | Interpretable, deterministic results | Keeps the top-K highest-probability paths through the graph. Paths are built step-by-step using the learned topic transitions; only the most likely continuations are kept. |
-| **random_walk** | Exploratory, single coherent path | Takes one stochastic walk through the graph, sampling the next topic from the transition model. Good when you want variety across queries or a single “storyline” of topics. |
-| **personalized_pagerank** | Balanced relevance and coverage (default) | Spreads relevance from your query’s topic prior over the whole graph via repeated propagation. Produces a steady-state importance score per node rather than explicit paths. |
+| Intent    | Graph relation preferred     | Basis |
+|-----------|------------------------------|--------|
+| **deepen**  | **Child** (subtopic of current) | Move to more specific subtopics; use when the user wants more detail or a deeper explanation. |
+| **broaden**  | **Parent** (coarse topic of current) | Move to the broader topic; use for big picture, overview, or context. |
+| **compare**  | **Sibling** (same parent as current) | Move to sibling subtopics; use to compare alternatives or related concepts at the same level. |
+| **apply**    | **Semantic neighbor** (topic-topic edge) | Move to semantically related topics; use for applications, examples, or related domains. |
+| **clarify**  | **Semantic neighbor** (high similarity) | Same as apply in structure; use when the current topic is unclear and the user wants a related explanation. |
+| **neutral**  | None (relevance + continuity only) | No structural bias; next topic by relevance to the query and continuity with the current topic. |
 
-**Policy**: At each step the next topic is chosen by scoring candidates: **Relevance** cos(μ_k, q), **Structural fit** R_intent(i,k), and **Novelty** (repetition penalty). Scores are softmax-normalized; next node is argmax (greedy) or sampled.
+**Policy** (at each step):  
+Score(k) = α·cos(μ_k, q) + β·cos(μ_k, μ_i) + γ·R_intent(i,k) + novelty_bonus + prior_weight·prior(k) − repetition_penalty − backtrack_penalty.  
+Scores are softmax-normalized; next node is argmax (greedy) or sampled. Intent is inferred from query text or set via `query(..., intent=TraversalIntent.DEEPEN)`.
 
-**Intents** (inferred from query text, or overridden in `query(intent=...)`): see table above.
+### Navigation graph (conceptual)
 
-(Deprecated: **beam** — Use when you care about *why* something was retrieved. You get explicit paths (topic → topic → …) and can inspect them with `path_trace=True` and `explain()`. Results are deterministic for the same query and index. Tune with `beam_width` (more paths = more coverage, more cost) and `max_steps`.
-- **random_walk** — Use when you want one coherent trail through the corpus or more diversity between repeated queries. Increase `exploration_factor` to make the walk less greedy and more exploratory. Paths are available in the explanation when `path_trace=True`.
-- **personalized_pagerank** — Use as the default when you want a good balance of relevance and coverage without caring about a single path. It uses your full topic prior (all query-relevant topics) and the graph’s link structure. No path trace; explanations focus on the prior and strategy. Tune with `max_steps` (PageRank iterations).
+Topic nodes and relation types form the graph that intents steer over: coarse topics have subtopics (child nodes); siblings share a parent; topic–topic edges connect semantically similar topics (centroid similarity).
 
+```mermaid
+graph TB
+  subgraph hierarchy [Topic hierarchy]
+    T0["t:0 coarse"]
+    T00["t:0:0 sub"]
+    T01["t:0:1 sub"]
+    T02["t:0:2 sub"]
+    T1["t:1 coarse"]
+    T10["t:1:0 sub"]
+    T0 -->|parent-child BROADEN up DEEPEN down| T00
+    T0 --> T01
+    T0 --> T02
+    T1 --> T10
+    T00 ---|sibling COMPARE| T01
+    T00 ---|sibling| T02
+  end
+  T00 -.->|topic-topic APPLY CLARIFY| T10
+```
+
+Example:
 Example: configure policy weights and use path trace:
 
 ```python
@@ -79,21 +102,21 @@ flowchart TD
 
   subgraph indexPipeline [Indexing Pipeline]
     chunker["Chunker: fixed-window / sentence"]
-    topicFit["TopicModel.fit: BERTopic or LDA"]
+    topicFit["TopicModel.fit on chunks"]
     topicXform["TopicModel.transform"]
     indexer["CorpusIndexer"]
   end
 
   corpus --> chunker
-  corpus --> topicFit
+  chunker -->|"chunk texts"| topicFit
   chunker -->|"chunks c1 .. cn"| indexer
   topicFit --> topicXform
   topicXform -->|"P(t | chunk)"| indexer
 
-  subgraph graphLayer ["Graph G = (V, E) where V = T U C"]
-    tNodes["TopicNodes T: t:0, t:1, ..."]
-    cNodes["ChunkNodes C: c:0, c:1, ..."]
-    adj["Weighted Directed Edges A_ij = w_ij"]
+  subgraph graphLayer ["Graph G = (V, E): topic and chunk nodes"]
+    tNodes["Topic nodes T: coarse t:i, subtopics t:i:j"]
+    cNodes["Chunk nodes C: c:0, c:1, ..."]
+    adj["Edges: parent-child, topic-chunk, topic-topic semantic"]
   end
 
   indexer -->|"create nodes"| tNodes
@@ -131,7 +154,7 @@ flowchart TD
   subgraph queryPipe [Query Pipeline]
     qInit["QueryInitializer"]
     topicPrior["Topic prior P0 and semantic state S_t"]
-    intent["Intent I_t from query text"]
+    intent["Intent I_t: deepen, broaden, compare, apply, clarify, neutral"]
   end
 
   query --> qInit
@@ -140,8 +163,8 @@ flowchart TD
   qInit --> intent
 
   subgraph travEng [Traversal Engine]
-    policy["Intent-conditioned policy: Score(k) = alpha cos mu_k q + beta cos mu_k mu_i + gamma R_intent - delta repeat"]
-    navigate["Navigate: softmax(Score/T), greedy or sample"]
+    policy["Policy: Score(k) = alpha cos(mu_k,q) + beta cos(mu_k,mu_i) + gamma R_intent + novelty - penalties"]
+    navigate["Navigate over graph: softmax(Score/T), greedy or sample"]
   end
 
   topicPrior --> navigate
