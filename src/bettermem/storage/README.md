@@ -1,36 +1,14 @@
-Storage and persistence
-=======================
+# Storage
 
-The `bettermem.storage` package provides **serialization** utilities for
-indices and sparse transition data.
+Serialization and persistence for indices.
 
-Modules
--------
+## Modules
 
-- `sparse_tensor.py`:
-  - Defines `SparseTensor3D`, a minimal wrapper for the dict-of-dicts
-    representation used for second-order transitions:
-    \(\mathcal{T}_{ijk}\) stored as `data[(i,j)][k] = value`.
-  - Provides `to_dict` / `from_dict` helpers for JSON-friendly encoding.
-- `persistence.py`:
-  - `save_index(path, graph, transition_model, config=None)` writes:
-    - `graph.joblib`: serialized `Graph` (joblib, with embeddings as numpy for efficiency).
-    - `transition.joblib`: serialized `TransitionModel` (joblib).
-    - `config.json`: `BetterMemConfig` settings (optional, for human-readable config).
-  - `load_index(path, mmap_mode=None)` loads from `graph.joblib` and `transition.joblib`
-    only (joblib format). Optional `mmap_mode` (e.g. `'r'`) is passed to `joblib.load`
-    for memory-mapped loading of large indices.
-    - `Graph` via `Graph.from_dict`.
-    - `TransitionModel` via `TransitionModel.from_dict`.
-    - Optional `BetterMemConfig` from `config.json` if present.
+- **`persistence.py`**:
+  - **save_index(path, graph, transition_model, config=None)**: writes `graph.joblib` (Graph with nodes/edges), `transition.joblib` (TransitionModel), and optional `config.json`.
+  - **load_index(path, mmap_mode=None)**: loads graph and transition model from joblib; parses optional `config.json` into BetterMemConfig. Graph is rebuilt via `Graph.from_dict` (including topic indexes). Topic model is **not** persisted; a loaded client runs without it (query prior can fall back to uniform over topics).
+- **`sparse_tensor.py`**: Optional sparse representation for transition counts; used by TransitionModel serialization if applicable.
 
-How it fits into the system
----------------------------
+## How it fits
 
-- The `BetterMem.save` and `BetterMem.load` API methods delegate to this
-  package to persist and restore indices.
-- Keeping graph structure, transition statistics, and configuration
-  versioned and decoupled allows BetterMem to:
-  - Run offline without re-indexing.
-  - Share indices across environments or processes.
-
+- **BetterMem.save** and **BetterMem.load** delegate here. Enables offline use and sharing indices without re-indexing.

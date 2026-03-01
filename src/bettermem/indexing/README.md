@@ -1,46 +1,23 @@
-Indexing pipeline
-=================
+# Indexing
 
-The `bettermem.indexing` package turns a raw text corpus into:
+Builds the topic–chunk graph and topic sequences for the transition model.
 
-- Text **chunks**.
-- Topic and chunk **nodes** in the graph.
-- Topic–chunk **edges** and topic **sequences** for the transition model.
+## Modules
 
-Modules
--------
+- **`chunker.py`**: `Chunk` dataclass and `BaseChunker` protocol. **ParagraphSentenceChunker** splits by paragraphs and sentences, respects `max_tokens`, keeps structural groups for chunk–chunk edges. Default chunker for the client.
+- **`corpus_indexer.py`**: **CorpusIndexer** orchestrates:
+  - Chunk corpus, fit topic model on chunk texts, **transform** (P(leaf|chunk) per chunk).
+  - **Hierarchical nodes and edges**: for each topic in the hierarchy (from topic model `get_hierarchy`, `get_all_topic_ids`, etc.) add `TopicNode` with parent_ids, level, optional centroid/keywords; add TOPIC_SUBTOPIC edges. For each chunk, add `ChunkNode`; link to **top-M leaf topics** above a probability threshold, with **ancestor decay** so parent topics also get topic–chunk edges (for recall when the walk visits coarse nodes). Fallback: if no topic passes the threshold, link to the best leaf anyway.
+  - **Structural chunk edges**: same-document, same structural-group consecutive chunks get CHUNK_CHUNK_STRUCTURAL edges.
+  - **Topic–topic semantic edges**: kNN on topic centroids (cosine), excluding ancestor–descendant pairs; optional hnswlib.
+  - **Topic sequences** per document (best topic per chunk) for the transition model.
+- **`keyword_mapper.py`**: Optional keyword-based topic prior for queries (TFIDF-style over topic keywords).
 
-- `chunker.py`:
-  - Defines `Chunk` objects and a `BaseChunker` protocol.
-  - Implements `FixedWindowChunker` that splits documents into overlapping
-    windows of tokens \(\{c_1, \dots, c_n\}\).
-- `keyword_mapper.py`:
-  - Implements `KeywordToTopicMapper`, which approximates
-    \(P(t \mid q) \propto \sum_{w \in q} \text{TFIDF}(w, t)\) using counts
-    over topic keyword lists.
-- `corpus_indexer.py`:
-  - Orchestrates indexing with:
-    - `build_index(corpus)`: chunk documents, fit topic model, produce
-      chunk-level \(P(t \mid \text{chunk})\), create `TopicNode`s and
-      `ChunkNode`s, and connect them with weighted edges.
-    - Builds per-document sequences of **top topics** and passes them to
-      the transition model as training sequences.
+## Concepts
 
-Math and concepts
------------------
+- Topic model must provide `get_hierarchy()`, `get_all_topic_ids()`, and for hierarchical indexing `get_leaf_topic_ids()`, `get_parents()`, and optionally `get_centroid`, `embed_texts`.
+- Chunk–topic links are sparse (top leaves + ancestors with decay) so retrieval can hit chunks when visiting any level of the tree.
 
-- Chunks are basic retrieval units, each linked to one or more topics by
-  \(P(t \mid \text{chunk})\).
-- For each document, the most probable topic per chunk yields a sequence
-  \((t_1, t_2, \dots, t_m)\), which drives second-order count estimation
-  for \(P(k \mid i,j)\).
+## How it fits
 
-How it fits into the system
----------------------------
-
-- The indexer is called by `BetterMem.build_index` to construct:
-  - The **graph** structure (`bettermem.core.graph.Graph`).
-  - The **transition model** (`bettermem.core.transition_model.TransitionModel`).
-- The resulting graph and transition model are later used by the traversal
-  engine and retrieval layer during queries.
-
+- **BetterMem.build_index** creates graph and transition model, then calls the indexer with config (e.g. `topic_chunk_top_m`, `topic_chunk_min_prob`, `topic_chunk_ancestor_decay`). The resulting graph and transition model are used by the traversal engine and retrieval.
