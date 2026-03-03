@@ -30,6 +30,8 @@ results = client.query("attention mechanism transformer training", top_k=5, path
 # client.explain() → intent, path, prior, path_steps, chunks_along_path
 ```
 
+For a **comprehensive explanation of all client configuration options** and how they affect traversal behavior in practice, see the dedicated configuration guide in [`docs/config/README.md`](docs/config/README.md).
+
 Full demo (Attention Is All You Need paper, all intents):
 
 ```bash
