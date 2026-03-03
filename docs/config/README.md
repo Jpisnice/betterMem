@@ -37,16 +37,16 @@ At query time, BetterMem:
 1. Builds a **topic prior** \(P(topic \mid query)\) from the topic model.
 2. Chooses a **start topic** and **intent** (deepen, broaden, compare, apply, clarify, neutral).
 3. Repeatedly scores candidate next topics with a **policy**:
-
-   \[
-   \text{Score}(k)
-   = \alpha \cdot \cos(\mu_k, q)
-   + \beta \cdot \cos(\mu_k, \mu_i)
-   + \gamma \cdot R_{\text{intent}}(i, k)
-   + \text{novelty\_bonus}
-   + \text{prior\_weight} \cdot \text{prior}(k)
-   - \text{repetition/backtrack penalties}
-   \]
+$$
+\text{Score}(k)
+=
+\alpha \cdot \cos(\mu_k, q)
++ \beta \cdot \cos(\mu_k, \mu_i)
++ \gamma \cdot R_{\text{intent}}(i, k)
++ \text{novelty\_bonus}
++ \text{prior\_weight}\cdot \text{prior}(k)
+- \text{repetition/backtrack penalties}
+$$
 
 4. Optionally blends this policy with a **Markov transition model** over topic sequences.
 5. Projects visited topic scores down to **chunks**, with per-topic normalization, and reranks final chunks by a hybrid of **topic score**, **query–chunk cosine**, and optionally **BM25**.
