@@ -39,13 +39,13 @@ At query time, BetterMem:
 3. Repeatedly scores candidate next topics with a **policy**:
 
    \[
-   \text{Score}(k) =
-   \alpha \cdot \cos(\mu_k, q)
+   \text{Score}(k)
+   = \alpha \cdot \cos(\mu_k, q)
    + \beta \cdot \cos(\mu_k, \mu_i)
    + \gamma \cdot R_{\text{intent}}(i, k)
    + \text{novelty\_bonus}
    + \text{prior\_weight} \cdot \text{prior}(k)
-   - \text{repetition/ backtrack penalties}
+   - \text{repetition/backtrack penalties}
    \]
 
 4. Optionally blends this policy with a **Markov transition model** over topic sequences.
