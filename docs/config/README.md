@@ -56,7 +56,7 @@ $$
 + \beta \cdot \cos(\mu_k, \mu_i)
 + \gamma \cdot R_{\text{intent}}(i, k)
 + \text{novelty\_bonus}
-+ \text{prior\_weight}\cdot \text{prior}(k)
++ \text{prior\_weight} \cdot \text{prior}(k)
 - \text{repetition/backtrack penalties}
 
 4. Optionally blends this policy with a **Markov transition model** over topic sequences.
