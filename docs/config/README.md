@@ -58,6 +58,7 @@ $$
 + \text{novelty\_bonus}
 + \text{prior\_weight} \cdot \text{prior}(k)
 - \text{repetition/backtrack penalties}
+```
 
 4. Optionally blends this policy with a **Markov transition model** over topic sequences.
 5. Projects visited topic scores down to **chunks**, with per-topic normalization, and reranks final chunks by a hybrid of **topic score**, **query–chunk cosine**, and optionally **BM25**.
