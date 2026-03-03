@@ -37,29 +37,33 @@ At query time, BetterMem:
 1. Builds a **topic prior** \(P(topic \mid query)\) from the topic model.
 2. Chooses a **start topic** and **intent** (deepen, broaden, compare, apply, clarify, neutral).
 3. Repeatedly scores candidate next topics with a **policy**:
-
-$$
-\text{Score}(k)
-=
-\alpha \cdot \cos(\mu_k, q)
-+ \beta \cdot \cos(\mu_k, \mu_i)
-+ \gamma \cdot R_{\text{intent}}(i, k)
-+ \text{novelty\_bonus}
-+ \text{prior\_weight}\cdot \text{prior}(k)
-- \text{repetition/backtrack penalties}
-$$
-
 ```math
+\begin{aligned}
 \text{Score}(k)
-=
+&=
 \alpha \cdot \cos(\mu_k, q)
 + \beta \cdot \cos(\mu_k, \mu_i)
 + \gamma \cdot R_{\text{intent}}(i, k)
 + \text{novelty\_bonus}
 + \text{prior\_weight} \cdot \text{prior}(k)
 - \text{repetition/backtrack penalties}
+\\[6pt]
+\textbf{Where:}\quad
+&\begin{aligned}
+\bullet\;& k &&\text{: candidate item/key being scored} \\
+\bullet\;& \mu_k &&\text{: embedding/centroid representation of } k \\
+\bullet\;& q &&\text{: query embedding} \\
+\bullet\;& \mu_i &&\text{: embedding of current/previous item } i \\
+\bullet\;& \alpha,\beta,\gamma &&\text{: scalar weights} \\
+\bullet\;& R_{\text{intent}}(i,k) &&\text{: intent relevance/compatibility score} \\
+\bullet\;& \text{novelty\_bonus} &&\text{: additive novelty reward term} \\
+\bullet\;& \text{prior}(k) &&\text{: prior probability / preference for } k \\
+\bullet\;& \text{prior\_weight} &&\text{: weight applied to the prior term} \\
+\bullet\;& \text{repetition/backtrack penalties} &&\text{: penalties discouraging repeats/backtracking} \\
+\bullet\;& \cos(a,b) &&\text{: cosine similarity between vectors } a \text{ and } b
+\end{aligned}
+\end{aligned}
 ```
-
 4. Optionally blends this policy with a **Markov transition model** over topic sequences.
 5. Projects visited topic scores down to **chunks**, with per-topic normalization, and reranks final chunks by a hybrid of **topic score**, **query–chunk cosine**, and optionally **BM25**.
 
