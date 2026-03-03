@@ -18,6 +18,7 @@ from bettermem.core.nodes import (
 from bettermem.core.transition_model import TransitionModel
 from bettermem.indexing.chunker import BaseChunker, Chunk
 from bettermem.topic_modeling.base import BaseTopicModel
+from bettermem.api.embeddings import EmbeddingBackend
 
 
 class CorpusIndexer:
@@ -30,11 +31,13 @@ class CorpusIndexer:
         topic_model: BaseTopicModel,
         graph: Graph,
         transition_model: TransitionModel,
+        embedding_backend: Optional[EmbeddingBackend] = None,
     ) -> None:
         self._chunker = chunker
         self._topic_model = topic_model
         self._graph = graph
         self._transition_model = transition_model
+        self._embedding_backend = embedding_backend
 
     @property
     def graph(self) -> Graph:
@@ -131,7 +134,8 @@ class CorpusIndexer:
     ) -> None:
         chunk_texts = [c.text for c in chunks]
         embeddings: Optional[Sequence[Sequence[float]]] = None
-        if hasattr(self._topic_model, "embed_texts") and chunk_texts:
+        # Only store embeddings on ChunkNode when no external embedding backend is configured.
+        if self._embedding_backend is None and hasattr(self._topic_model, "embed_texts") and chunk_texts:
             emb = self._topic_model.embed_texts(chunk_texts)
             if emb is not None:
                 embeddings = emb
@@ -196,6 +200,10 @@ class CorpusIndexer:
                     kind=EdgeKind.TOPIC_SUBTOPIC,
                 )
 
+        upsert_ids: list[str] = []
+        upsert_texts: list[str] = []
+        upsert_metas: list[dict] = []
+
         for chunk_idx, (chunk, dist) in enumerate(zip(chunks, topic_dists)):
             chunk_emb = None
             if embeddings is not None and chunk_idx < len(embeddings):
@@ -208,6 +216,15 @@ class CorpusIndexer:
                 metadata={"text": chunk.text},
             )
             self._graph.add_node(chunk_node)
+
+            if self._embedding_backend is not None:
+                meta: dict = {
+                    "document_id": chunk.document_id,
+                    "position": chunk.position,
+                }
+                upsert_ids.append(chunk_node.id)
+                upsert_texts.append(chunk.text)
+                upsert_metas.append(meta)
 
             leaf_dist = {tid: p for tid, p in dist.items() if tid in leaf_ids_set} if leaf_ids_set else dict(dist)
             items = sorted(leaf_dist.items(), key=lambda kv: kv[1], reverse=True)
@@ -244,6 +261,13 @@ class CorpusIndexer:
                             if isinstance(p_node, TopicNode) and chunk_node.id not in p_node.chunk_ids:
                                 p_node.chunk_ids.append(chunk_node.id)
                     current = parents[0]
+
+        if self._embedding_backend is not None and upsert_ids:
+            self._embedding_backend.upsert_chunks(
+                ids=upsert_ids,
+                texts=upsert_texts,
+                metadatas=upsert_metas,
+            )
 
     def _add_structural_chunk_edges(self, chunks: Sequence[Chunk]) -> None:
         by_doc: dict[str, List[Tuple[Chunk, int]]] = {}

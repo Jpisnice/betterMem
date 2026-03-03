@@ -16,6 +16,7 @@ from bettermem.retrieval.scorer import QueryScorer
 from bettermem.storage.persistence import load_index, save_index
 from bettermem.topic_modeling.semantic_hierarchical import SemanticHierarchicalTopicModel
 from .config import BetterMemConfig
+from .embeddings import EmbeddingBackend
 
 
 class BetterMem:
@@ -31,6 +32,7 @@ class BetterMem:
         *,
         config: Optional[BetterMemConfig] = None,
         topic_model: Optional[Any] = None,
+        embedding_backend: Optional[EmbeddingBackend] = None,
     ) -> None:
         """Initialize a BetterMem instance.
 
@@ -44,6 +46,7 @@ class BetterMem:
         """
         self.config: BetterMemConfig = config or BetterMemConfig()
         self._topic_model = topic_model
+        self._embedding_backend: Optional[EmbeddingBackend] = embedding_backend
 
         # Internal components
         self._graph: Optional[Graph] = None
@@ -52,6 +55,15 @@ class BetterMem:
         self._traversal_engine: Optional[TraversalEngine] = None
         self._context_aggregator: Optional[ContextAggregator] = None
         self._last_explanation: Any = None
+
+    def attach_embedding_backend(self, backend: EmbeddingBackend) -> None:
+        """Attach or replace the embedding backend used for reranking and indexing.
+
+        This is not persisted with the index; callers should re-attach an
+        appropriate backend (e.g. ChromaEmbeddingBackend) after BetterMem.load().
+        """
+
+        self._embedding_backend = backend
 
     # ------------------------------------------------------------------
     # Indexing
@@ -85,6 +97,7 @@ class BetterMem:
                 max_depth=self.config.hierarchy_max_depth,
                 min_cluster_size=self.config.min_cluster_size,
                 dag_tau=self.config.dag_tau,
+                embedding_backend=self._embedding_backend,
             )
 
         if chunker is None:
@@ -94,6 +107,7 @@ class BetterMem:
             topic_model=self._topic_model,
             graph=self._graph,
             transition_model=self._transition_model,
+            embedding_backend=self._embedding_backend,
         )
         self._indexer.build_index(
             corpus,
@@ -330,11 +344,14 @@ class BetterMem:
             path_steps.append(step_info)
 
         if chunk_ids_needing_embed and self._topic_model is not None and hasattr(self._topic_model, "embed_texts"):
-            texts_to_embed = [t for (_, _, t) in chunk_ids_needing_embed]
-            embeddings = self._topic_model.embed_texts(texts_to_embed)
-            if embeddings is not None and len(embeddings) == len(chunk_ids_needing_embed):
-                for (step_idx, chunk_idx, _), emb in zip(chunk_ids_needing_embed, embeddings):
-                    path_steps[step_idx]["chunks"][chunk_idx]["embedding"] = list(emb)
+            # When an external embedding backend is used (e.g. Chroma), we avoid
+            # recomputing or serializing large embedding vectors in explanations.
+            if self._embedding_backend is None:
+                texts_to_embed = [t for (_, _, t) in chunk_ids_needing_embed]
+                embeddings = self._topic_model.embed_texts(texts_to_embed)
+                if embeddings is not None and len(embeddings) == len(chunk_ids_needing_embed):
+                    for (step_idx, chunk_idx, _), emb in zip(chunk_ids_needing_embed, embeddings):
+                        path_steps[step_idx]["chunks"][chunk_idx]["embedding"] = list(emb)
 
         explanation["path_steps"] = path_steps
 
@@ -412,13 +429,6 @@ class BetterMem:
         if self._graph is None or self._topic_model is None:
             return chunk_scores
 
-        query_emb: Optional[Sequence[float]] = None
-        if wc > 0 or wb > 0:
-            if hasattr(self._topic_model, "embed_query"):
-                query_emb = self._topic_model.embed_query(query_text)
-            if query_emb is not None:
-                query_emb = list(query_emb)
-
         # Normalize topic scores to [0, 1]
         t_max = max(chunk_scores.values()) if chunk_scores else 0.0
         if t_max <= 0:
@@ -426,48 +436,71 @@ class BetterMem:
         else:
             norm_topic = {cid: s / t_max for cid, s in chunk_scores.items()}
 
-        # Cosine similarity query–chunk; normalize to [0, 1]
-        norm_cosine: dict[str, float] = {}
-        if wc > 0 and query_emb is not None:
-            chunk_ids = list(chunk_scores.keys())
-            embeddings: List[Optional[Sequence[float]]] = []
-            need_embed: List[Tuple[str, str]] = []
-            for cid in chunk_ids:
-                node = self._graph.get_node(cid)
-                if isinstance(node, ChunkNode) and node.embedding is not None:
-                    embeddings.append(node.embedding)
-                else:
-                    text = ""
-                    if node is not None:
-                        raw = (node.metadata or {}).get("text")
-                        text = raw if isinstance(raw, str) else ""
-                    embeddings.append(None)
-                    need_embed.append((cid, text))
-            if need_embed and hasattr(self._topic_model, "embed_texts"):
-                texts_to_embed = [t for (_, t) in need_embed]
-                emb_list = self._topic_model.embed_texts(texts_to_embed)
-                if emb_list is not None:
-                    for (cid, _), emb in zip(need_embed, emb_list):
-                        idx = chunk_ids.index(cid)
-                        embeddings[idx] = list(emb) if emb is not None else None
-            q_norm = (sum(x * x for x in query_emb)) ** 0.5
-            if q_norm <= 0:
-                q_norm = 1e-12
-            cosines: List[float] = []
-            for i, cid in enumerate(chunk_ids):
-                emb = embeddings[i] if i < len(embeddings) else None
-                if emb is None or len(emb) != len(query_emb):
-                    cosines.append(0.0)
-                    continue
-                dot = sum(a * b for a, b in zip(query_emb, emb))
-                n = (sum(x * x for x in emb)) ** 0.5
-                n = n if n > 0 else 1e-12
-                cos = dot / (q_norm * n)
-                cos = max(-1.0, min(1.0, cos))
-                cosines.append((cos + 1.0) * 0.5)
-            norm_cosine = {cid: cosines[i] for i, cid in enumerate(chunk_ids)}
-        else:
-            norm_cosine = {cid: 0.0 for cid in chunk_scores}
+        # Cosine-like similarity query–chunk; normalize to [0, 1].
+        # When an embedding backend is configured, delegate to it (e.g. Chroma).
+        norm_cosine: dict[str, float] = {cid: 0.0 for cid in chunk_scores}
+        if wc > 0:
+            if self._embedding_backend is not None:
+                # Ask the backend for ANN results and map scores back to chunk ids.
+                all_ids = list(chunk_scores.keys())
+                k = min(len(all_ids), max(32, min(512, len(all_ids))))
+                matches = self._embedding_backend.query_chunks(
+                    query_text=query_text,
+                    top_k=k,
+                    where=None,
+                )
+                if matches:
+                    max_score = max(m.get("score", 0.0) for m in matches)
+                    if max_score > 0:
+                        for m in matches:
+                            cid = str(m.get("id"))
+                            if cid in chunk_scores:
+                                s = float(m.get("score", 0.0)) / max_score
+                                norm_cosine[cid] = max(0.0, min(1.0, s))
+            else:
+                # Fallback: use topic_model embeddings and stored chunk embeddings.
+                query_emb: Optional[Sequence[float]] = None
+                if hasattr(self._topic_model, "embed_query"):
+                    query_emb = self._topic_model.embed_query(query_text)
+                if query_emb is not None:
+                    query_emb = list(query_emb)
+                    chunk_ids = list(chunk_scores.keys())
+                    embeddings: List[Optional[Sequence[float]]] = []
+                    need_embed: List[Tuple[str, str]] = []
+                    for cid in chunk_ids:
+                        node = self._graph.get_node(cid)
+                        if isinstance(node, ChunkNode) and node.embedding is not None:
+                            embeddings.append(node.embedding)
+                        else:
+                            text = ""
+                            if node is not None:
+                                raw = (node.metadata or {}).get("text")
+                                text = raw if isinstance(raw, str) else ""
+                            embeddings.append(None)
+                            need_embed.append((cid, text))
+                    if need_embed and hasattr(self._topic_model, "embed_texts"):
+                        texts_to_embed = [t for (_, t) in need_embed]
+                        emb_list = self._topic_model.embed_texts(texts_to_embed)
+                        if emb_list is not None:
+                            for (cid, _), emb in zip(need_embed, emb_list):
+                                idx = chunk_ids.index(cid)
+                                embeddings[idx] = list(emb) if emb is not None else None
+                    q_norm = (sum(x * x for x in query_emb)) ** 0.5
+                    if q_norm <= 0:
+                        q_norm = 1e-12
+                    cosines: List[float] = []
+                    for i, cid in enumerate(chunk_ids):
+                        emb = embeddings[i] if i < len(embeddings) else None
+                        if emb is None or len(emb) != len(query_emb):
+                            cosines.append(0.0)
+                            continue
+                        dot = sum(a * b for a, b in zip(query_emb, emb))
+                        n = (sum(x * x for x in emb)) ** 0.5
+                        n = n if n > 0 else 1e-12
+                        cos = dot / (q_norm * n)
+                        cos = max(-1.0, min(1.0, cos))
+                        cosines.append((cos + 1.0) * 0.5)
+                    norm_cosine = {cid: cosines[i] for i, cid in enumerate(chunk_ids)}
 
         # Optional BM25 (stub: no-op when wb > 0 until implemented)
         norm_bm25: dict[str, float] = {cid: 0.0 for cid in chunk_scores}

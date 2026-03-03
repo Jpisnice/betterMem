@@ -10,6 +10,7 @@ The config controls **how the traversal walks the topic graph**, how **semantic 
 ```python
 from bettermem import BetterMem
 from bettermem.api.config import BetterMemConfig
+from bettermem.api.embeddings import ChromaEmbeddingBackend
 from bettermem.topic_modeling.semantic_hierarchical import SemanticHierarchicalTopicModel
 from bettermem.indexing.chunker import ParagraphSentenceChunker
 
@@ -17,7 +18,18 @@ config = BetterMemConfig()  # or BetterMemConfig.debug_preset()
 topic_model = SemanticHierarchicalTopicModel(...)
 chunker = ParagraphSentenceChunker(max_tokens=200)
 
-client = BetterMem(config=config, topic_model=topic_model)
+# Optional but recommended in production: use Chroma as the embedding backend.
+import chromadb
+
+chroma_client = chromadb.Client()
+collection = chroma_client.get_or_create_collection("my_bettermem_index")
+embedding_backend = ChromaEmbeddingBackend(collection=collection)
+
+client = BetterMem(
+    config=config,
+    topic_model=topic_model,
+    embedding_backend=embedding_backend,
+)
 client.build_index(corpus, chunker=chunker)
 
 results = client.query(
@@ -333,6 +345,64 @@ These three weights control that final mix.
   - Can be used to keep indexes for different corpora in well-known locations.
 
 For more on persistence, see the main project README (`client.save(path)` / `BetterMem.load(path)`).
+
+---
+
+## Using BetterMem with Chroma
+
+BetterMem can delegate both **embedding computation** and **vector storage** to [Chroma](https://docs.trychroma.com), while it keeps ownership of the **topic graph**, **navigation policy**, and **context aggregation**.
+
+- **Graph**: topics, chunks, edges, and Markov transitions are stored in BetterMem's index.
+- **Chroma**: chunk texts, embeddings, and ANN search live in a Chroma collection.
+
+### 1. Wiring a Chroma backend
+
+The `bettermem.api.embeddings.ChromaEmbeddingBackend` wraps a Chroma collection and exposes a small interface used by BetterMem:
+
+- `embed_texts(texts: list[str]) -> list[list[float]]`
+- `upsert_chunks(ids, texts, metadatas)`
+- `query_chunks(query_text, top_k, where=None)`
+
+You typically provision it once and pass it into `BetterMem`:
+
+```python
+import chromadb
+from bettermem import BetterMem
+from bettermem.api.config import BetterMemConfig
+from bettermem.api.embeddings import ChromaEmbeddingBackend
+
+chroma_client = chromadb.Client()
+collection = chroma_client.get_or_create_collection("my_bettermem_index")
+backend = ChromaEmbeddingBackend(collection=collection)
+
+config = BetterMemConfig()
+client = BetterMem(config=config, embedding_backend=backend)
+client.build_index(corpus)
+```
+
+On load, you re-attach the backend:
+
+```python
+loaded = BetterMem.load("/path/to/index")
+loaded.attach_embedding_backend(backend)
+```
+
+### 2. What moves to Chroma?
+
+When an embedding backend is attached:
+
+- During **indexing**:
+  - Each chunk is upserted into the Chroma collection with:
+    - `id = ChunkNode.id` (e.g. `"c:42"`)
+    - `document_id` and `position` as metadata
+  - The topic model can use the same embedding backend for its clustering logic.
+- During **querying / reranking**:
+  - The final reranking step `_rerank_chunk_scores` can call `backend.query_chunks(...)`
+    to obtain ANN-based relevance scores per chunk ID, which are blended with
+    graph-based topic scores.
+
+This keeps BetterMem's serialized index **vector-store agnostic** while allowing
+production setups to rely on a dedicated vector database for embeddings and ANN search.
 
 ---
 

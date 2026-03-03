@@ -4,6 +4,9 @@ Demo: intent-conditioned navigation over the Attention Is All You Need paper.
 Shows how each traversal intent (deepen, broaden, compare, apply, clarify, neutral)
 steers the graph walk and retrieves different context. Each section runs a query
 with that intent and prints the path taken plus a short explanation of the intent.
+
+This demo requires ChromaDB; if `chromadb` is not installed or the Chroma client
+cannot create a collection, it will raise a clear error.
 """
 
 from __future__ import annotations
@@ -11,8 +14,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
+import chromadb
+from chromadb.config import Settings
+from chromadb.utils import embedding_functions
+
 from bettermem.api.client import BetterMem
 from bettermem.api.config import BetterMemConfig
+from bettermem.api.embeddings import ChromaEmbeddingBackend
 from bettermem.core.nodes import ChunkNode
 from bettermem.indexing.chunker import ParagraphSentenceChunker
 from bettermem.retrieval.context_aggregator import ContextWindow
@@ -96,13 +104,44 @@ def main() -> None:
     base_query = "attention mechanism transformer training"
 
     config = BetterMemConfig.debug_preset()
+
+    # Chroma is a hard requirement for this demo.
+    # Users explicitly control embedding strategy here (local model/API-backed EF/etc.).
+    chroma_client = chromadb.Client(
+        Settings(
+            anonymized_telemetry=False,
+            is_persistent=True,
+            persist_directory=str((Path(__file__).resolve().parent / "chroma_store")),
+        )
+    )
+    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name="all-MiniLM-L6-v2",
+    )
+    embedding_backend = ChromaEmbeddingBackend(
+        client=chroma_client,
+        collection_name="bettermem_demo_index",
+        collection_kwargs={
+            "embedding_function": embedding_fn,
+            "metadata": {"hnsw:space": "cosine"},
+        },
+    )
+
+    # Pass the same embedding backend into the topic model so it does not
+    # load its own SentenceTransformer; all embeddings are delegated.
     topic_model = SemanticHierarchicalTopicModel(
         n_coarse=10,
         n_fine_per_coarse=4,
         random_state=42,
+        embedding_backend=embedding_backend,
     )
+
     chunker = ParagraphSentenceChunker(max_tokens=200)
-    client = BetterMem(config=config, topic_model=topic_model)
+
+    client = BetterMem(
+        config=config,
+        topic_model=topic_model,
+        embedding_backend=embedding_backend,
+    )
 
     print(f"Building index over {CORPUS_PATH.name} using BetterMem...")
     client.build_index([corpus_document], chunker=chunker)
@@ -152,6 +191,7 @@ def main() -> None:
     client.save(str(save_dir))
     print("Reloading client from disk...")
     reloaded = BetterMem.load(str(save_dir))
+    reloaded.attach_embedding_backend(embedding_backend)
     reload_results = reloaded.query(base_query, top_k=3, diversity=False)
     _print_results("Reloaded client (neutral)", reload_results, max_items=2)
 

@@ -47,6 +47,7 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
         min_cluster_size: int = 2,
         k_next: Optional[int] = None,
         dag_tau: Optional[float] = None,
+        embedding_backend: Optional[object] = None,
     ) -> None:
         self.n_coarse = max(1, n_coarse)
         self.n_fine_per_coarse = max(1, n_fine_per_coarse)
@@ -56,6 +57,11 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
         self.min_cluster_size = max(1, min_cluster_size)
         self.k_next = n_fine_per_coarse if k_next is None else max(1, k_next)
         self.dag_tau = dag_tau  # if set, add multi-parent edges where cos >= dag_tau (acyclic)
+
+        # Optional external embedding backend (e.g. ChromaEmbeddingBackend).
+        # When provided, all embedding operations are delegated to it instead of
+        # loading an in-process SentenceTransformer model.
+        self._embedding_backend = embedding_backend
 
         self._embedding_model = None
         self._hierarchy: dict[str, list[str]] = {}  # parent_id -> [child_ids]
@@ -72,8 +78,28 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
             self._embedding_model = SentenceTransformer(self.embedding_model_name)
         return self._embedding_model
 
-    def fit(self, documents: Iterable[str]) -> None:
+    def _encode_to_numpy(self, texts: Sequence[str]):
+        """Embed a batch of texts to a NumPy array using the configured backend."""
         import numpy as np
+
+        texts_list = list(texts)
+        if not texts_list:
+            return np.zeros((0, 1), dtype=np.float32)
+
+        if self._embedding_backend is not None:
+            vectors = self._embedding_backend.embed_texts(texts_list)
+            arr = np.array(vectors, dtype=np.float32)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            return arr
+
+        model = self._get_embedding_model()
+        emb = model.encode(texts_list, convert_to_numpy=True)
+        if emb.ndim == 1:
+            emb = emb.reshape(1, -1)
+        return emb
+
+    def fit(self, documents: Iterable[str]) -> None:
         from sklearn.cluster import KMeans
 
         docs = list(documents)
@@ -85,10 +111,7 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
             self._leaf_ids = []
             return
 
-        model = self._get_embedding_model()
-        embeddings = model.encode(docs, convert_to_numpy=True)
-        if embeddings.ndim == 1:
-            embeddings = embeddings.reshape(1, -1)
+        embeddings = self._encode_to_numpy(docs)
         self._fitted_documents = docs
         self._fitted_embeddings = embeddings
 
@@ -347,8 +370,6 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
         distribution is peaked enough to produce topic-chunk edges above min_prob,
         even when there are many leaf topics.
         """
-        import numpy as np
-
         chunk_list = list(chunks)
         if not chunk_list or not self._centroids:
             leaf = self.get_leaf_topic_ids()
@@ -357,16 +378,15 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
             u = 1.0 / len(leaf)
             return [{tid: u for tid in leaf} for _ in chunk_list]
 
-        model = self._get_embedding_model()
-        emb = model.encode(chunk_list, convert_to_numpy=True)
-        if emb.ndim == 1:
-            emb = emb.reshape(1, -1)
+        emb = self._encode_to_numpy(chunk_list)
 
         leaf_ids = self.get_leaf_topic_ids()
         if not leaf_ids:
             all_ids = self.get_all_topic_ids()
             u = 1.0 / len(all_ids) if all_ids else 1.0
             return [{tid: u for tid in all_ids} for _ in chunk_list]
+
+        import numpy as np
 
         centroid_matrix = np.array(
             [self._centroids[tid] for tid in leaf_ids], dtype=np.float32
@@ -407,19 +427,17 @@ class SemanticHierarchicalTopicModel(BaseTopicModel):
     def embed_query(self, text: str) -> Optional[Sequence[float]]:
         if not self._centroids:
             return None
-        model = self._get_embedding_model()
-        emb = model.encode([text], convert_to_numpy=True)
-        if emb.ndim == 1:
-            return emb.tolist()
+        emb = self._encode_to_numpy([text])
+        if emb.shape[0] == 0:
+            return None
         return emb[0].tolist()
 
     def embed_texts(self, texts: Sequence[str]) -> Optional[Sequence[Sequence[float]]]:
         if not texts or not self._centroids:
             return None
-        model = self._get_embedding_model()
-        emb = model.encode(list(texts), convert_to_numpy=True)
-        if emb.ndim == 1:
-            return [emb.tolist()]
+        emb = self._encode_to_numpy(list(texts))
+        if emb.shape[0] == 0:
+            return None
         return [emb[i].tolist() for i in range(emb.shape[0])]
 
     def get_coarse_centroid(self, coarse_id: int) -> Optional[Sequence[float]]:
